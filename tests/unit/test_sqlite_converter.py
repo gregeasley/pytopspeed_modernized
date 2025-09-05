@@ -1,0 +1,433 @@
+"""
+Unit tests for SQLite converter components
+"""
+
+import pytest
+import sqlite3
+import tempfile
+import os
+from converter.sqlite_converter import SqliteConverter
+
+
+class TestSqliteConverterInitialization:
+    """Test SqliteConverter initialization"""
+    
+    def test_converter_initialization_default(self):
+        """Test converter initialization with default parameters"""
+        converter = SqliteConverter()
+        
+        assert converter is not None
+        assert converter.batch_size == 1000
+        assert converter.progress_callback is None
+        assert converter.schema_mapper is not None
+        assert converter.logger is not None
+    
+    def test_converter_initialization_custom(self):
+        """Test converter initialization with custom parameters"""
+        def dummy_callback(current, total, message):
+            pass
+        
+        converter = SqliteConverter(batch_size=500, progress_callback=dummy_callback)
+        
+        assert converter.batch_size == 500
+        assert converter.progress_callback == dummy_callback
+        assert converter.schema_mapper is not None
+        assert converter.logger is not None
+
+
+class TestFieldValueConversion:
+    """Test field value conversion functionality"""
+    
+    def test_convert_field_value_string(self):
+        """Test string field value conversion"""
+        converter = SqliteConverter()
+        
+        class MockField:
+            def __init__(self, type):
+                self.type = type
+        
+        # Test STRING type
+        field = MockField('STRING')
+        assert converter._convert_field_value(field, "test string") == "test string"
+        assert converter._convert_field_value(field, b"test bytes") == "test bytes"
+        assert converter._convert_field_value(field, None) is None
+        
+        # Test with null bytes (rstrip only removes from end)
+        assert converter._convert_field_value(field, "test\x00string") == "test\x00string"
+        assert converter._convert_field_value(field, b"test\x00bytes") == "test\x00bytes"
+    
+    def test_convert_field_value_numeric(self):
+        """Test numeric field value conversion"""
+        converter = SqliteConverter()
+        
+        class MockField:
+            def __init__(self, type):
+                self.type = type
+        
+        # Test integer types
+        for int_type in ['BYTE', 'SHORT', 'USHORT', 'LONG', 'ULONG']:
+            field = MockField(int_type)
+            assert converter._convert_field_value(field, 123) == 123
+            assert converter._convert_field_value(field, "456") == 456
+            assert converter._convert_field_value(field, None) is None
+        
+        # Test float types
+        for float_type in ['FLOAT', 'DOUBLE', 'DECIMAL']:
+            field = MockField(float_type)
+            assert converter._convert_field_value(field, 123.45) == 123.45
+            assert converter._convert_field_value(field, "456.78") == 456.78
+            assert converter._convert_field_value(field, None) is None
+    
+    def test_convert_field_value_date(self):
+        """Test date field value conversion"""
+        converter = SqliteConverter()
+        
+        class MockField:
+            def __init__(self, type):
+                self.type = type
+        
+        field = MockField('DATE')
+        
+        # Test valid date (0xYYYYMMDD format)
+        # Example: 0x20231225 = 2023-12-25
+        date_value = (2023 << 16) | (12 << 8) | 25
+        result = converter._convert_field_value(field, date_value)
+        assert result == "2023-12-25"
+        
+        # Test invalid date
+        assert converter._convert_field_value(field, 0) is None
+        assert converter._convert_field_value(field, None) is None
+    
+    def test_convert_field_value_time(self):
+        """Test time field value conversion"""
+        converter = SqliteConverter()
+        
+        class MockField:
+            def __init__(self, type):
+                self.type = type
+        
+        field = MockField('TIME')
+        
+        # Test valid time (0xHHMMSSHS format)
+        # Example: 0x14300000 = 14:30:00
+        time_value = (20 << 24) | (30 << 16) | (45 << 8) | 0
+        result = converter._convert_field_value(field, time_value)
+        assert result == "20:30:45"
+        
+        # Test invalid time
+        assert converter._convert_field_value(field, 0) is None
+        assert converter._convert_field_value(field, None) is None
+    
+    def test_convert_field_value_group(self):
+        """Test group (binary) field value conversion"""
+        converter = SqliteConverter()
+        
+        class MockField:
+            def __init__(self, type):
+                self.type = type
+        
+        field = MockField('GROUP')
+        
+        # Test binary data
+        binary_data = b"binary data"
+        assert converter._convert_field_value(field, binary_data) == binary_data
+        assert converter._convert_field_value(field, None) is None
+        assert converter._convert_field_value(field, "string") is None
+    
+    def test_convert_field_value_default(self):
+        """Test default field value conversion"""
+        converter = SqliteConverter()
+        
+        class MockField:
+            def __init__(self, type):
+                self.type = type
+        
+        field = MockField('UNKNOWN_TYPE')
+        
+        # Test default conversion to string
+        assert converter._convert_field_value(field, 123) == "123"
+        assert converter._convert_field_value(field, 123.45) == "123.45"
+        assert converter._convert_field_value(field, None) is None
+
+
+class TestRecordConversion:
+    """Test record to tuple conversion"""
+    
+    def test_convert_record_to_tuple_dict(self):
+        """Test converting dict record to tuple"""
+        converter = SqliteConverter()
+        
+        class MockField:
+            def __init__(self, name, type):
+                self.name = name
+                self.type = type
+        
+        class MockTableDef:
+            def __init__(self):
+                self.fields = [
+                    MockField("FIELD1", "STRING"),
+                    MockField("FIELD2", "LONG")
+                ]
+                self.memos = []
+        
+        record = {
+            "FIELD1": "test value",
+            "FIELD2": 123,
+            "OTHER_FIELD": "ignored"
+        }
+        
+        table_def = MockTableDef()
+        result = converter._convert_record_to_tuple(record, table_def)
+        
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+        assert result[0] == "test value"
+        assert result[1] == 123
+    
+    def test_convert_record_to_tuple_object(self):
+        """Test converting object record to tuple"""
+        converter = SqliteConverter()
+        
+        class MockField:
+            def __init__(self, name, type):
+                self.name = name
+                self.type = type
+        
+        class MockTableDef:
+            def __init__(self):
+                self.fields = [
+                    MockField("FIELD1", "STRING"),
+                    MockField("FIELD2", "LONG")
+                ]
+                self.memos = []
+        
+        class MockRecord:
+            def __init__(self):
+                self.FIELD1 = "test value"
+                self.FIELD2 = 123
+        
+        record = MockRecord()
+        table_def = MockTableDef()
+        result = converter._convert_record_to_tuple(record, table_def)
+        
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+        assert result[0] == "test value"
+        assert result[1] == 123
+    
+    def test_convert_record_to_tuple_with_memos(self):
+        """Test converting record with memo fields"""
+        converter = SqliteConverter()
+        
+        class MockField:
+            def __init__(self, name, type):
+                self.name = name
+                self.type = type
+        
+        class MockMemo:
+            def __init__(self, name):
+                self.name = name
+        
+        class MockTableDef:
+            def __init__(self):
+                self.fields = [MockField("FIELD1", "STRING")]
+                self.memos = [MockMemo("MEMO1")]
+        
+        record = {
+            "FIELD1": "test value",
+            "MEMO1": "memo content"
+        }
+        
+        table_def = MockTableDef()
+        result = converter._convert_record_to_tuple(record, table_def)
+        
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+        assert result[0] == "test value"
+        assert result[1] == "memo content"
+
+
+class TestSchemaCreation:
+    """Test SQLite schema creation"""
+    
+    def test_create_schema_basic(self, sample_tps, temp_sqlite_db):
+        """Test basic schema creation"""
+        converter = SqliteConverter()
+        
+        conn = sqlite3.connect(temp_sqlite_db)
+        try:
+            table_mapping = converter._create_schema(sample_tps, conn)
+            
+            assert isinstance(table_mapping, dict)
+            assert len(table_mapping) > 0
+            
+            # Check that tables were created
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table'")
+            table_count = cursor.fetchone()[0]
+            assert table_count > 0
+            
+            # Check that indexes were created
+            cursor.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='index'")
+            index_count = cursor.fetchone()[0]
+            assert index_count > 0
+            
+        finally:
+            conn.close()
+    
+    def test_create_schema_table_mapping(self, sample_tps, temp_sqlite_db):
+        """Test that table mapping is correct"""
+        converter = SqliteConverter()
+        
+        conn = sqlite3.connect(temp_sqlite_db)
+        try:
+            table_mapping = converter._create_schema(sample_tps, conn)
+            
+            # Check that mapping contains expected tables
+            assert len(table_mapping) > 0
+            
+            # Check that all mapped tables exist in database
+            cursor = conn.cursor()
+            for original_name, sanitized_name in table_mapping.items():
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (sanitized_name,))
+                result = cursor.fetchone()
+                assert result is not None, f"Table {sanitized_name} not found in database"
+                
+        finally:
+            conn.close()
+
+
+class TestDataMigration:
+    """Test data migration functionality"""
+    
+    def test_migrate_table_data_basic(self, sample_tps, sample_table_name, temp_sqlite_db):
+        """Test basic table data migration"""
+        converter = SqliteConverter()
+        
+        # First create schema
+        conn = sqlite3.connect(temp_sqlite_db)
+        try:
+            table_mapping = converter._create_schema(sample_tps, conn)
+            
+            if sample_table_name in table_mapping:
+                sanitized_name = table_mapping[sample_table_name]
+                
+                # Migrate data
+                record_count = converter._migrate_table_data(
+                    sample_tps, sample_table_name, sanitized_name, conn
+                )
+                
+                assert record_count >= 0
+                
+                # Check that data was inserted
+                cursor = conn.cursor()
+                cursor.execute(f"SELECT COUNT(*) FROM {sanitized_name}")
+                db_count = cursor.fetchone()[0]
+                assert db_count == record_count
+                
+        finally:
+            conn.close()
+    
+    def test_migrate_table_data_empty_table(self, sample_tps, temp_sqlite_db):
+        """Test migration of empty table"""
+        converter = SqliteConverter()
+        
+        # Find an empty table
+        empty_table_name = None
+        for table_number in sample_tps.tables._TpsTablesList__tables:
+            table = sample_tps.tables._TpsTablesList__tables[table_number]
+            if table.name and table.name != '':
+                sample_tps.set_current_table(table.name)
+                record_count = sum(1 for _ in sample_tps)
+                if record_count == 0:
+                    empty_table_name = table.name
+                    break
+        
+        if empty_table_name:
+            conn = sqlite3.connect(temp_sqlite_db)
+            try:
+                table_mapping = converter._create_schema(sample_tps, conn)
+                
+                if empty_table_name in table_mapping:
+                    sanitized_name = table_mapping[empty_table_name]
+                    
+                    # Migrate data
+                    record_count = converter._migrate_table_data(
+                        sample_tps, empty_table_name, sanitized_name, conn
+                    )
+                    
+                    assert record_count == 0
+                    
+            finally:
+                conn.close()
+
+
+class TestProgressCallback:
+    """Test progress callback functionality"""
+    
+    def test_progress_callback_invocation(self):
+        """Test that progress callback is invoked correctly"""
+        callback_invocations = []
+        
+        def progress_callback(current, total, message):
+            callback_invocations.append((current, total, message))
+        
+        converter = SqliteConverter(progress_callback=progress_callback)
+        
+        # Test progress update
+        converter._update_progress(10, 100, "Test message")
+        
+        assert len(callback_invocations) == 1
+        assert callback_invocations[0] == (10, 100, "Test message")
+    
+    def test_progress_callback_no_callback(self):
+        """Test progress update without callback"""
+        converter = SqliteConverter()
+        
+        # Should not raise exception
+        converter._update_progress(10, 100, "Test message")
+
+
+class TestErrorHandling:
+    """Test error handling in converter"""
+    
+    def test_convert_nonexistent_file(self):
+        """Test conversion of nonexistent file"""
+        converter = SqliteConverter()
+        
+        results = converter.convert("nonexistent.phd", "output.sqlite")
+        
+        assert results['success'] is False
+        assert len(results['errors']) > 0
+        assert results['tables_created'] == 0
+        assert results['total_records'] == 0
+    
+    def test_convert_invalid_file(self, temp_sqlite_db):
+        """Test conversion of invalid file"""
+        converter = SqliteConverter()
+        
+        # Create a temporary invalid file
+        with tempfile.NamedTemporaryFile(suffix='.phd', delete=False) as tmp:
+            tmp.write(b"invalid data")
+            invalid_file = tmp.name
+        
+        try:
+            results = converter.convert(invalid_file, temp_sqlite_db)
+            
+            assert results['success'] is False
+            assert len(results['errors']) > 0
+            
+        finally:
+            os.unlink(invalid_file)
+    
+    def test_migrate_table_data_error_handling(self, sample_tps, temp_sqlite_db):
+        """Test error handling in table data migration"""
+        converter = SqliteConverter()
+        
+        # Test with invalid table name
+        record_count = converter._migrate_table_data(
+            sample_tps, "INVALID_TABLE", "INVALID_TABLE", 
+            sqlite3.connect(temp_sqlite_db)
+        )
+        
+        assert record_count == 0
