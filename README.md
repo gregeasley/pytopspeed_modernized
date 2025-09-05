@@ -31,17 +31,24 @@ A modernized Python library for converting Clarion TopSpeed database files (.phd
 
 ### Installation
 
+#### Option 1: Install from PyPI (Recommended)
+```bash
+# Install directly from PyPI
+pip install pytopspeed-modernized
+```
+
+#### Option 2: Install from Source
 ```bash
 # Clone the repository
 git clone https://github.com/gregeasley/pytopspeed_modernized
 cd pytopspeed_modernized
 
-# Create conda environment
+# Create conda environment (optional)
 conda create -n pytopspeed_modernized python=3.11
 conda activate pytopspeed_modernized
 
-# Install dependencies
-pip install -r requirements.txt
+# Install in development mode
+pip install -e .
 ```
 
 ### Basic Usage
@@ -232,8 +239,7 @@ git clone https://github.com/gregeasley/pytopspeed_modernized
 cd pytopspeed_modernized
 conda create -n pytopspeed_modernized_dev python=3.11
 conda activate pytopspeed_modernized_dev
-pip install -r requirements.txt
-pip install -e .
+pip install -e .[dev]
 
 # Run tests
 python -m pytest tests/ -v

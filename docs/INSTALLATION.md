@@ -18,9 +18,18 @@ This guide provides detailed installation instructions for the Pytopspeed Modern
 
 ## 🚀 Installation Methods
 
-### Method 1: Conda Environment (Recommended)
+### Method 1: Install from PyPI (Recommended)
 
-This is the recommended installation method as it provides better dependency management.
+This is the easiest and recommended installation method for most users.
+
+```bash
+# Install directly from PyPI
+pip install pytopspeed-modernized
+```
+
+### Method 2: Install from Source
+
+This method is recommended for developers who want to contribute or modify the code.
 
 #### Step 1: Clone the Repository
 
@@ -29,7 +38,7 @@ git clone https://github.com/gregeasley/pytopspeed_modernized
 cd pytopspeed_modernized
 ```
 
-#### Step 2: Create Conda Environment
+#### Step 2: Create Conda Environment (Optional)
 
 ```bash
 # Create a new conda environment with Python 3.11
@@ -39,11 +48,11 @@ conda create -n pytopspeed_modernized python=3.11
 conda activate pytopspeed_modernized
 ```
 
-#### Step 3: Install Dependencies
+#### Step 3: Install in Development Mode
 
 ```bash
-# Install required packages
-pip install -r requirements.txt
+# Install in development mode
+pip install -e .
 ```
 
 #### Step 4: Verify Installation
