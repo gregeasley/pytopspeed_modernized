@@ -57,7 +57,7 @@ TopSpeed File → Parser → Schema Mapper → SQLite Converter → SQLite Datab
 ### Directory Layout
 
 ```
-phdwin_reader/
+pytopspeed_modernized/
 ├── src/                          # Source code
 │   ├── pytopspeed/              # Modernized TopSpeed parser
 │   │   ├── __init__.py
@@ -126,14 +126,14 @@ phdwin_reader/
 
 1. **Clone the repository**:
    ```bash
-   git clone <repository-url>
-   cd phdwin_reader
+   git clone https://github.com/gregeasley/pytopspeed_modernized
+   cd pytopspeed_modernized
    ```
 
 2. **Create development environment**:
    ```bash
-   conda create -n phdwin_reader_dev python=3.11
-   conda activate phdwin_reader_dev
+   conda create -n pytopspeed_modernized_dev python=3.11
+   conda activate pytopspeed_modernized_dev
    ```
 
 3. **Install dependencies**:

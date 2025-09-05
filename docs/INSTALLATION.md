@@ -25,18 +25,18 @@ This is the recommended installation method as it provides better dependency man
 #### Step 1: Clone the Repository
 
 ```bash
-git clone <repository-url>
-cd phdwin_reader
+git clone https://github.com/gregeasley/pytopspeed_modernized
+cd pytopspeed_modernized
 ```
 
 #### Step 2: Create Conda Environment
 
 ```bash
 # Create a new conda environment with Python 3.11
-conda create -n phdwin_reader python=3.11
+conda create -n pytopspeed_modernized python=3.11
 
 # Activate the environment
-conda activate phdwin_reader
+conda activate pytopspeed_modernized
 ```
 
 #### Step 3: Install Dependencies
@@ -63,8 +63,8 @@ If you prefer using Python's built-in virtual environment:
 #### Step 1: Clone the Repository
 
 ```bash
-git clone <repository-url>
-cd phdwin_reader
+git clone https://github.com/gregeasley/pytopspeed_modernized
+cd pytopspeed_modernized
 ```
 
 #### Step 2: Create Virtual Environment
@@ -104,8 +104,8 @@ python pytopspeed.py --help
 #### Step 1: Clone the Repository
 
 ```bash
-git clone <repository-url>
-cd phdwin_reader
+git clone https://github.com/gregeasley/pytopspeed_modernized
+cd pytopspeed_modernized
 ```
 
 #### Step 2: Install Dependencies
@@ -297,7 +297,7 @@ pip install -e .
 conda deactivate
 
 # Remove environment
-conda env remove -n phdwin_reader
+conda env remove -n pytopspeed_modernized
 ```
 
 ### Remove Virtual Environment

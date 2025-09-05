@@ -1,1 +1,1 @@
-# phdwin_reader package
+# pytopspeed_modernized package

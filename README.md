@@ -33,12 +33,12 @@ A modernized Python library for converting Clarion TopSpeed database files (.phd
 
 ```bash
 # Clone the repository
-git clone <repository-url>
-cd phdwin_reader
+git clone https://github.com/gregeasley/pytopspeed_modernized
+cd pytopspeed_modernized
 
 # Create conda environment
-conda create -n phdwin_reader python=3.11
-conda activate phdwin_reader
+conda create -n pytopspeed_modernized python=3.11
+conda activate pytopspeed_modernized
 
 # Install dependencies
 pip install -r requirements.txt
@@ -228,10 +228,10 @@ We welcome contributions! Please see our [Developer Documentation](docs/DEVELOPE
 
 ```bash
 # Clone and setup development environment
-git clone <repository-url>
-cd phdwin_reader
-conda create -n phdwin_reader_dev python=3.11
-conda activate phdwin_reader_dev
+git clone https://github.com/gregeasley/pytopspeed_modernized
+cd pytopspeed_modernized
+conda create -n pytopspeed_modernized_dev python=3.11
+conda activate pytopspeed_modernized_dev
 pip install -r requirements.txt
 pip install -e .
 

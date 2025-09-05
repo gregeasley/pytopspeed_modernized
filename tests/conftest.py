@@ -1,5 +1,5 @@
 """
-Pytest configuration and shared fixtures for the phdwin_reader test suite
+Pytest configuration and shared fixtures for the pytopspeed_modernized test suite
 """
 
 import pytest

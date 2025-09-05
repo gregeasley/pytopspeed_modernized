@@ -131,7 +131,7 @@ The pytopspeed library provides a solid foundation with:
 ### 2.1 Project Structure
 - [x] **Create project directory structure**
   ```
-  phdwin_reader/
+  pytopspeed_modernized/
   ├── src/
   │   ├── __init__.py
   │   ├── pytopspeed/          # Modernized pytopspeed library

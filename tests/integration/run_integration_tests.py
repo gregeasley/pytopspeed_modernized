@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Integration test runner for the phdwin_reader project
+Integration test runner for the pytopspeed_modernized project
 """
 
 import sys
@@ -16,7 +16,7 @@ sys.path.insert(0, str(project_root / 'src'))
 def run_integration_tests():
     """Run all integration tests"""
     
-    print("🧪 Running Integration Tests for phdwin_reader...")
+    print("🧪 Running Integration Tests for pytopspeed_modernized...")
     print("=" * 80)
     
     # Change to project root directory
@@ -141,7 +141,7 @@ def main():
     """Main function"""
     import argparse
     
-    parser = argparse.ArgumentParser(description="Run integration tests for phdwin_reader")
+    parser = argparse.ArgumentParser(description="Run integration tests for pytopspeed_modernized")
     parser.add_argument("--test", help="Run specific test (end-to-end, performance, mod, sqlite, schema, parser)")
     parser.add_argument("--list", action="store_true", help="List available tests")
     

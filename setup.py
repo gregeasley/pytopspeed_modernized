@@ -33,17 +33,17 @@ def read_requirements():
 
 setup(
     name="pytopspeed-modernized",
-    version="1.0.0",
+    version="1.0.1",
     author="Greg Easley",
     author_email="greg@easley.dev",
     description="Modernized pytopspeed library for converting TopSpeed database files to SQLite",
     long_description=read_readme(),
     long_description_content_type="text/markdown",
-    url="https://github.com/your-username/pytopspeed-modernized",
+    url="https://github.com/gregeasley/pytopspeed_modernized",
     project_urls={
-        "Bug Reports": "https://github.com/your-username/pytopspeed-modernized/issues",
-        "Source": "https://github.com/your-username/pytopspeed-modernized",
-        "Documentation": "https://github.com/your-username/pytopspeed-modernized/blob/main/docs/README.md",
+        "Bug Reports": "https://github.com/gregeasley/pytopspeed_modernized/issues",
+        "Source": "https://github.com/gregeasley/pytopspeed_modernized",
+        "Documentation": "https://github.com/gregeasley/pytopspeed_modernized/blob/master/docs/README.md",
     },
     packages=find_packages(where="src"),
     package_dir={"": "src"},
