@@ -20,12 +20,57 @@ A modernized Python library for converting Clarion TopSpeed database files (.phd
 
 ## 📋 Supported File Formats
 
-| Format | Description | Support |
-|--------|-------------|---------|
-| `.phd` | Clarion TopSpeed database files | ✅ Full |
-| `.mod` | Clarion TopSpeed model files | ✅ Full |
-| `.tps` | Clarion TopSpeed files | ✅ Full |
-| `.phz` | Zip archives containing TopSpeed files | ✅ Full |
+| Format | Description | Support | Converter Class |
+|--------|-------------|---------|-----------------|
+| `.phd` | Clarion TopSpeed database files | ✅ Full | `SqliteConverter` |
+| `.mod` | Clarion TopSpeed model files | ✅ Full | `SqliteConverter` |
+| `.tps` | Clarion TopSpeed files | ✅ Full | `SqliteConverter` |
+| `.phz` | Zip archives containing TopSpeed files | ✅ Full | `PhzConverter` |
+
+## 🔧 File Types and Usage
+
+### Single TopSpeed Files (.phd, .mod, .tps)
+Use `SqliteConverter` for individual TopSpeed files:
+
+```python
+from converter.sqlite_converter import SqliteConverter
+
+converter = SqliteConverter()
+result = converter.convert('input.phd', 'output.sqlite')
+```
+
+### Multiple TopSpeed Files (Combined Database)
+Use `SqliteConverter.convert_multiple()` to combine multiple files into one SQLite database:
+
+```python
+from converter.sqlite_converter import SqliteConverter
+
+converter = SqliteConverter()
+result = converter.convert_multiple(
+    ['file1.phd', 'file2.mod', 'file3.tps'], 
+    'combined.sqlite'
+)
+```
+
+### PHZ Files (Zip Archives)
+Use `PhzConverter` for .phz files (zip archives containing TopSpeed files):
+
+```python
+from converter.phz_converter import PhzConverter
+
+converter = PhzConverter()
+result = converter.convert_phz('input.phz', 'output.sqlite')
+```
+
+### Reverse Conversion (SQLite to TopSpeed)
+Use `ReverseConverter` to convert SQLite databases back to TopSpeed files:
+
+```python
+from converter.reverse_converter import ReverseConverter
+
+converter = ReverseConverter()
+result = converter.convert_sqlite_to_topspeed('input.sqlite', 'output_directory/')
+```
 
 ## 🛠️ Quick Start
 
@@ -70,22 +115,99 @@ python pytopspeed.py list assets/TxWells.phz
 python pytopspeed.py reverse input.sqlite output_directory/
 ```
 
-### Python API
+### Python API Examples
 
+#### Single TopSpeed File Conversion
 ```python
 from converter.sqlite_converter import SqliteConverter
 
-# Single file conversion
+# Convert a single .phd, .mod, or .tps file
 converter = SqliteConverter()
 results = converter.convert('input.phd', 'output.sqlite')
+print(f"Success: {results['success']}, Records: {results['total_records']}")
+```
 
-# Multiple file conversion
-results = converter.convert_multiple(['file1.phd', 'file2.mod'], 'combined.sqlite')
+#### Multiple Files to Combined Database
+```python
+from converter.sqlite_converter import SqliteConverter
 
-# PHZ file conversion
+# Combine multiple TopSpeed files into one SQLite database
+converter = SqliteConverter()
+results = converter.convert_multiple(
+    ['file1.phd', 'file2.mod'], 
+    'combined.sqlite'
+)
+print(f"Files processed: {results['files_processed']}")
+```
+
+#### PHZ File Conversion (Zip Archives)
+```python
 from converter.phz_converter import PhzConverter
+
+# Convert .phz files (zip archives containing TopSpeed files)
 phz_converter = PhzConverter()
 results = phz_converter.convert_phz('input.phz', 'output.sqlite')
+print(f"Extracted files: {results['extracted_files']}")
+```
+
+#### Reverse Conversion (SQLite to TopSpeed)
+```python
+from converter.reverse_converter import ReverseConverter
+
+# Convert SQLite database back to TopSpeed files
+reverse_converter = ReverseConverter()
+results = reverse_converter.convert_sqlite_to_topspeed(
+    'input.sqlite', 
+    'output_directory/'
+)
+print(f"Generated files: {results['generated_files']}")
+```
+
+## 🚨 Common Issues and Solutions
+
+### Wrong Converter for File Type
+**Problem**: Using `SqliteConverter.convert()` with a `.phz` file
+```python
+# ❌ WRONG - This will fail
+converter = SqliteConverter()
+result = converter.convert('input.phz', 'output.sqlite')  # Error: 'TPS' object has no attribute 'tables'
+```
+
+**Solution**: Use `PhzConverter.convert_phz()` for `.phz` files
+```python
+# ✅ CORRECT
+from converter.phz_converter import PhzConverter
+converter = PhzConverter()
+result = converter.convert_phz('input.phz', 'output.sqlite')
+```
+
+### File Not Found
+**Problem**: File path doesn't exist
+```python
+# ❌ WRONG - File doesn't exist
+result = converter.convert('nonexistent.phd', 'output.sqlite')
+```
+
+**Solution**: Check file exists before conversion
+```python
+import os
+if os.path.exists('input.phd'):
+    result = converter.convert('input.phd', 'output.sqlite')
+else:
+    print("File not found!")
+```
+
+### Import Errors
+**Problem**: Import path issues
+```python
+# ❌ WRONG - Incorrect import path
+from sqlite_converter import SqliteConverter  # ModuleNotFoundError
+```
+
+**Solution**: Use correct import path
+```python
+# ✅ CORRECT
+from converter.sqlite_converter import SqliteConverter
 ```
 
 ## 📊 Performance

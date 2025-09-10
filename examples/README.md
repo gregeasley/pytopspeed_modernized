@@ -6,6 +6,7 @@ This directory contains comprehensive examples demonstrating how to use the Pyto
 
 ### 1. Basic Conversion Examples
 
+- **`file_type_usage_guide.py`** - **START HERE** - Complete guide to file types and converter usage
 - **`convert_phd_to_sqlite.py`** - Convert a single .phd file to SQLite
 - **`convert_combined_to_sqlite.py`** - Convert multiple TopSpeed files to a combined SQLite database
 - **`convert_phz_to_sqlite.py`** - Convert a .phz (zip) file to SQLite
@@ -25,19 +26,38 @@ This directory contains comprehensive examples demonstrating how to use the Pyto
 - **`data_validation.py`** - Validate conversion results
 - **`performance_benchmarking.py`** - Performance testing and benchmarking
 
+## 🔧 File Type Usage Guide
+
+| File Type | Extension | Example File | Converter Class | Method |
+|-----------|-----------|--------------|-----------------|--------|
+| **Single TopSpeed** | `.phd`, `.mod`, `.tps` | `convert_phd_to_sqlite.py` | `SqliteConverter` | `convert()` |
+| **Multiple TopSpeed** | `.phd`, `.mod`, `.tps` | `convert_combined_to_sqlite.py` | `SqliteConverter` | `convert_multiple()` |
+| **PHZ Archive** | `.phz` | `convert_phz_to_sqlite.py` | `PhzConverter` | `convert_phz()` |
+| **Reverse Conversion** | `.sqlite` | `convert_sqlite_to_topspeed.py` | `ReverseConverter` | `convert_sqlite_to_topspeed()` |
+
 ## 🚀 Quick Start
 
-### Run a Basic Example
+### Start with the Usage Guide
 
 ```bash
-# Convert a single file
+# First, understand which converter to use for which file type
+python examples/file_type_usage_guide.py
+```
+
+### Run Basic Examples
+
+```bash
+# Convert a single .phd/.mod/.tps file
 python examples/convert_phd_to_sqlite.py
 
-# Convert multiple files
+# Convert multiple TopSpeed files to combined database
 python examples/convert_combined_to_sqlite.py
 
-# Convert PHZ file
+# Convert .phz (zip archive) file
 python examples/convert_phz_to_sqlite.py
+
+# Convert SQLite back to TopSpeed files
+python examples/convert_sqlite_to_topspeed.py
 ```
 
 ### Run with Custom Files

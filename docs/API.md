@@ -14,9 +14,20 @@ This document provides comprehensive API documentation for the Pytopspeed Modern
 
 ## 🔧 Core Classes
 
+### File Type Usage Guide
+
+| File Type | Extension | Converter Class | Method | Description |
+|-----------|-----------|-----------------|--------|-------------|
+| **Single TopSpeed** | `.phd`, `.mod`, `.tps` | `SqliteConverter` | `convert()` | Convert individual TopSpeed files |
+| **Multiple TopSpeed** | `.phd`, `.mod`, `.tps` | `SqliteConverter` | `convert_multiple()` | Combine multiple files into one database |
+| **PHZ Archive** | `.phz` | `PhzConverter` | `convert_phz()` | Convert zip archives containing TopSpeed files |
+| **Reverse Conversion** | `.sqlite` | `ReverseConverter` | `convert_sqlite_to_topspeed()` | Convert SQLite back to TopSpeed files |
+
 ### SqliteConverter
 
 Main class for converting TopSpeed files to SQLite databases.
+
+**Use for**: Single `.phd`, `.mod`, `.tps` files or combining multiple files
 
 ```python
 from converter.sqlite_converter import SqliteConverter
@@ -90,6 +101,8 @@ results = converter.convert_multiple(files, 'combined.sqlite')
 ### PhzConverter
 
 Class for handling .phz files (zip archives containing TopSpeed files).
+
+**Use for**: `.phz` files (zip archives containing TopSpeed files)
 
 ```python
 from converter.phz_converter import PhzConverter
