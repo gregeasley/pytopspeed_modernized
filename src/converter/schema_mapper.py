@@ -3,7 +3,7 @@ Schema Mapper for converting TopSpeed table definitions to SQLite CREATE TABLE s
 """
 
 import sqlite3
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 from .multidimensional_handler import MultidimensionalHandler
 
 
@@ -247,6 +247,46 @@ class TopSpeedToSQLiteMapper:
         # Add index creation statements
         for index in table_def.indexes:
             index_sql = self.generate_create_index_sql(table_name_str, index, table_def)
+            if index_sql:
+                result['create_indexes'].append(index_sql)
+        
+        return result
+    
+    def map_table_schema_with_multidimensional(self, table_name: str, table_def, table_structure: Dict[str, Any], file_prefix: str = "") -> Dict[str, str]:
+        """
+        Map a complete TopSpeed table schema to SQLite using multidimensional analysis
+        
+        Args:
+            table_name: Name of the table
+            table_def: TopSpeed table definition object
+            table_structure: Multidimensional analysis results
+            file_prefix: Optional prefix for table names
+            
+        Returns:
+            Dictionary with 'create_table' and 'create_indexes' keys
+        """
+        # Convert table_name to string if it's a Container object
+        table_name_str = str(table_name) if hasattr(table_name, '__str__') else table_name
+        
+        # Use multidimensional handler to create schema
+        sanitized_table_name = self.sanitize_table_name(table_name_str)
+        
+        # Apply file prefix if provided
+        if file_prefix:
+            sanitized_table_name = f"{file_prefix}{sanitized_table_name}"
+        
+        create_table_sql = self.multidimensional_handler.create_sqlite_schema(sanitized_table_name, table_structure)
+        
+        result = {
+            'table_name': sanitized_table_name,
+            'create_table': create_table_sql,
+            'create_indexes': []
+        }
+        
+        # Add index creation statements (only for regular fields, not JSON arrays)
+        for index in table_def.indexes:
+            # Use the sanitized table name (with prefix) for index creation
+            index_sql = self.generate_create_index_sql(sanitized_table_name, index, table_def)
             if index_sql:
                 result['create_indexes'].append(index_sql)
         

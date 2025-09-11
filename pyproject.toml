@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pytopspeed-modernized"
-version = "1.1.0"
+version = "1.1.1"
 description = "Modernized pytopspeed library for converting TopSpeed database files to SQLite"
 readme = "README.md"
 license = {text = "MIT"}

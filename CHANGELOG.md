@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2025-01-11
+
+### Fixed
+- **PHZ Table Prefixing**: Fixed inconsistent table prefixing in PHZ file conversions
+  - Tables with multidimensional arrays now properly receive `phd_` and `mod_` prefixes
+  - Resolved data migration failures where tables were created without prefixes
+  - Ensured consistent table naming across all PHZ file types
+  - Fixed schema creation to properly apply file prefixes to all tables
+
+### Technical Details
+- Updated `map_table_schema_with_multidimensional()` method to handle file prefixes
+- Fixed index creation to use prefixed table names
+- Resolved table mapping inconsistencies between schema creation and data migration
+- All 72 tables in PHZ files now have proper prefixes (52 phd_ tables, 21 mod_ tables)
+
 ## [1.1.0] - 2025-01-11
 
 ### Added

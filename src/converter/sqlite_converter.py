@@ -325,40 +325,17 @@ class SqliteConverter:
                     # Get table definition
                     table_def = tps.tables.get_definition(table_number)
                     
-                    # Map schema
+                    # Analyze table structure for multidimensional arrays
                     table_name_str = str(table.name) if hasattr(table.name, '__str__') else table.name
-                    schema = self.schema_mapper.map_table_schema(table_name_str, table_def)
+                    table_structure = self.schema_mapper.multidimensional_handler.analyze_table_structure(table_def)
+                    
+                    # Map schema using multidimensional analysis
+                    schema = self.schema_mapper.map_table_schema_with_multidimensional(table_name_str, table_def, table_structure, file_prefix)
                     sanitized_table_name = schema['table_name']
                     
-                    # Apply file prefix if provided
-                    if file_prefix:
-                        sanitized_table_name = f"{file_prefix}{sanitized_table_name}"
-                        # Update the schema with the new table name
-                        schema['table_name'] = sanitized_table_name
-                        schema['create_table'] = schema['create_table'].replace(
-                            f"CREATE TABLE {schema['table_name'].replace(file_prefix, '')}",
-                            f"CREATE TABLE {sanitized_table_name}"
-                        )
-                        # Update index names to include the prefix
-                        new_indexes = []
-                        for index_sql in schema['create_indexes']:
-                            # Extract index name and update it
-                            if "CREATE INDEX" in index_sql:
-                                parts = index_sql.split(" ON ")
-                                if len(parts) == 2:
-                                    index_name_part = parts[0].replace("CREATE INDEX ", "")
-                                    table_part = parts[1].split(" (")[0]
-                                    new_index_name = f"{file_prefix}{index_name_part}"
-                                    new_table_name = f"{file_prefix}{table_part}"
-                                    new_index_sql = f"CREATE INDEX {new_index_name} ON {new_table_name} ({parts[1].split(' (')[1]}"
-                                    new_indexes.append(new_index_sql)
-                                else:
-                                    new_indexes.append(index_sql)
-                            else:
-                                new_indexes.append(index_sql)
-                        schema['create_indexes'] = new_indexes
-                    
-                    table_mapping[table.name] = sanitized_table_name
+                    # Use the original table name as the key for data migration
+                    # This ensures the data migration looks for the correct table name
+                    table_mapping[table_name_str] = sanitized_table_name
                     
                     # Create table
                     cursor.execute(schema['create_table'])
@@ -658,7 +635,7 @@ class SqliteConverter:
                         else:
                             file_prefix = f"file_{file_idx + 1}_"
                         
-                        # Create schema for this file
+                        # Create schema for this file with proper prefixing
                         file_table_mapping = self._create_schema(tps, conn, file_prefix=file_prefix)
                         
                         # Check for table name collisions
