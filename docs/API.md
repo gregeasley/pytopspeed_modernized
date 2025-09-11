@@ -5,6 +5,7 @@ This document provides comprehensive API documentation for the Pytopspeed Modern
 ## 📚 Table of Contents
 
 - [Core Classes](#core-classes)
+- [Resilience Features](#resilience-features)
 - [SQLite Converter](#sqlite-converter)
 - [Multidimensional Handler](#multidimensional-handler)
 - [PHZ Converter](#phz-converter)
@@ -12,6 +13,158 @@ This document provides comprehensive API documentation for the Pytopspeed Modern
 - [Schema Mapper](#schema-mapper)
 - [TopSpeed Parser](#topspeed-parser)
 - [Utility Functions](#utility-functions)
+
+## 🛡️ Resilience Features
+
+### ResilienceEnhancer
+
+Core resilience engine providing memory management, adaptive batch sizing, and error recovery for large database conversions.
+
+```python
+from converter.resilience_enhancements import ResilienceEnhancer
+```
+
+#### Constructor
+
+```python
+ResilienceEnhancer(max_memory_mb: int = 500, enable_progress_tracking: bool = True)
+```
+
+**Parameters:**
+- `max_memory_mb` (int): Maximum memory usage in MB before cleanup (default: 500)
+- `enable_progress_tracking` (bool): Enable detailed progress tracking (default: True)
+
+#### Methods
+
+##### `get_adaptive_batch_size(table_def) -> int`
+
+Calculate optimal batch size based on table characteristics.
+
+**Parameters:**
+- `table_def`: Table definition object with `record_size` and `field_count` attributes
+
+**Returns:**
+- `int`: Optimal batch size (5-400 records based on table complexity)
+
+**Example:**
+```python
+enhancer = ResilienceEnhancer()
+batch_size = enhancer.get_adaptive_batch_size(table_def)
+```
+
+##### `check_memory_usage() -> bool`
+
+Check if current memory usage exceeds the configured limit.
+
+**Returns:**
+- `bool`: True if memory limit exceeded, False otherwise
+
+##### `force_memory_cleanup()`
+
+Force garbage collection to free memory.
+
+##### `extract_raw_data_safe(record) -> Optional[bytes]`
+
+Safely extract raw data from a TPS record with multiple fallback methods.
+
+**Parameters:**
+- `record`: TPS record object
+
+**Returns:**
+- `Optional[bytes]`: Raw data bytes or None if extraction fails
+
+##### `create_compact_json(raw_data: bytes, table_name: str) -> str`
+
+Create a compact JSON representation of raw binary data.
+
+**Parameters:**
+- `raw_data`: Raw binary data
+- `table_name`: Name of the table for context
+
+**Returns:**
+- `str`: JSON string representation with base64-encoded data
+
+##### `estimate_table_size(tps, table_name: str) -> Dict[str, Any]`
+
+Estimate table size and characteristics for optimization.
+
+**Parameters:**
+- `tps`: TopSpeed file object
+- `table_name`: Name of the table to estimate
+
+**Returns:**
+- `Dict[str, Any]`: Dictionary with size estimates and recommendations
+
+### ResilienceConfig
+
+Configuration management for resilience features with predefined settings for different database sizes.
+
+```python
+from converter.resilience_config import ResilienceConfig, get_resilience_config
+```
+
+#### Predefined Configurations
+
+```python
+# Get predefined configuration
+config = get_resilience_config('small')    # < 10MB databases
+config = get_resilience_config('medium')   # 10MB - 1GB databases  
+config = get_resilience_config('large')    # 1GB - 10GB databases
+config = get_resilience_config('enterprise') # > 10GB databases
+```
+
+#### Configuration Attributes
+
+| Attribute | Type | Description | Default |
+|-----------|------|-------------|---------|
+| `max_memory_mb` | int | Maximum memory usage in MB | 500 |
+| `default_batch_size` | int | Default batch size for processing | 100 |
+| `enable_streaming` | bool | Enable streaming for large tables | True |
+| `enable_parallel_processing` | bool | Enable parallel processing | False |
+| `enable_checkpointing` | bool | Enable checkpointing for resumability | False |
+| `sqlite_journal_mode` | str | SQLite journal mode | "WAL" |
+| `sqlite_cache_size` | int | SQLite cache size in KB | -2000 |
+
+#### Methods
+
+##### `to_dict() -> Dict[str, Any]`
+
+Convert configuration to dictionary.
+
+##### `from_dict(config_dict: Dict[str, Any]) -> ResilienceConfig`
+
+Create configuration from dictionary.
+
+##### `for_small_databases() -> ResilienceConfig`
+
+Get configuration optimized for small databases (< 10MB).
+
+##### `for_medium_databases() -> ResilienceConfig`
+
+Get configuration optimized for medium databases (10MB - 1GB).
+
+##### `for_large_databases() -> ResilienceConfig`
+
+Get configuration optimized for large databases (1GB - 10GB).
+
+##### `for_enterprise_databases() -> ResilienceConfig`
+
+Get configuration optimized for enterprise databases (> 10GB).
+
+### Database Size Category Estimation
+
+```python
+from converter.resilience_config import estimate_database_size_category
+
+category = estimate_database_size_category(estimated_size_mb, estimated_records)
+```
+
+**Parameters:**
+- `estimated_size_mb` (float): Estimated database size in MB
+- `estimated_records` (int): Estimated total number of records
+
+**Returns:**
+- `str`: Configuration category ('small', 'medium', 'large', 'enterprise')
 
 ## 🔧 Core Classes
 

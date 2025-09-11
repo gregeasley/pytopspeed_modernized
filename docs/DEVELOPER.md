@@ -531,8 +531,8 @@ We use semantic versioning (MAJOR.MINOR.PATCH):
    ```
 4. **Create release tag**:
    ```bash
-   git tag -a v1.1.1 -m "Release version 1.1.1"
-   git push origin v1.1.1
+   git tag -a v1.1.2 -m "Release version 1.1.2"
+   git push origin v1.1.2
    ```
 5. **Build and upload** to PyPI:
    ```bash

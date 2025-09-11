@@ -82,7 +82,9 @@ class TestCombinedConversion:
             return Mock(
                 fields=[mock_field],
                 memos=[],
-                indexes=[mock_index]
+                indexes=[mock_index],
+                field_count=1,
+                record_size=4
             )
         
         mock_tps.tables.get_definition = Mock(side_effect=mock_get_definition)
@@ -156,7 +158,9 @@ class TestCombinedConversion:
             return Mock(
                 fields=[mock_field],
                 memos=[],
-                indexes=[mock_index]
+                indexes=[mock_index],
+                field_count=1,
+                record_size=4
             )
         
         mock_tps.tables.get_definition = Mock(side_effect=mock_get_definition)

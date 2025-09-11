@@ -288,8 +288,15 @@ class SqliteConverter:
                         except Exception as e:
                             self.logger.warning(f"Error parsing array {array_info.base_name}: {e}")
                             values.append(None)
-                    
-                    return tuple(values)
+                
+                # Handle memo fields for raw record parsing
+                if hasattr(table_def, 'memos') and table_def.memos:
+                    for memo in table_def.memos:
+                        # For raw records, memo data is typically not available in the raw data
+                        # Set to None for now - this could be enhanced to read from memo files if needed
+                        values.append(None)
+                
+                return tuple(values)
             
             # Fall back to original conversion if multidimensional parsing fails
             return self._convert_record_to_tuple(record, table_def)
@@ -322,12 +329,20 @@ class SqliteConverter:
             
             if table.name and table.name != '':
                 try:
-                    # Get table definition
-                    table_def = tps.tables.get_definition(table_number)
+                    # Get table definition with robust error handling
+                    table_def = self._get_table_definition_robust(tps, table_number, table.name)
+                    if not table_def:
+                        self.logger.warning(f"Skipping table {table.name}: No table definition found")
+                        continue
                     
                     # Analyze table structure for multidimensional arrays
                     table_name_str = str(table.name) if hasattr(table.name, '__str__') else table.name
-                    table_structure = self.schema_mapper.multidimensional_handler.analyze_table_structure(table_def)
+                    
+                    try:
+                        table_structure = self.schema_mapper.multidimensional_handler.analyze_table_structure(table_def)
+                    except Exception as e:
+                        self.logger.warning(f"Skipping table {table.name}: Error analyzing table structure: {e}")
+                        continue
                     
                     # Map schema using multidimensional analysis
                     schema = self.schema_mapper.map_table_schema_with_multidimensional(table_name_str, table_def, table_structure, file_prefix)
@@ -373,7 +388,17 @@ class SqliteConverter:
         try:
             # Set current table
             tps.set_current_table(table_name)
-            table_def = tps.tables.get_definition(tps.current_table_number)
+            
+            # Get table definition with robust error handling
+            table_def = self._get_table_definition_robust(tps, tps.current_table_number, table_name)
+            if not table_def:
+                self.logger.warning(f"Skipping data migration for {table_name}: No table definition")
+                return 0
+            
+            # Check if this is an enhanced table definition (large array table)
+            # Use a lower threshold since FORCAST has 41 fields but is still a large array table
+            if hasattr(table_def, 'field_count') and table_def.field_count is not None and table_def.field_count > 30:
+                return self._migrate_large_array_table_data(tps, table_name, sanitized_table_name, conn, table_def)
             
             # Analyze table structure for multi-dimensional fields
             analysis = self.schema_mapper.multidimensional_handler.analyze_table_structure(table_def)
@@ -571,6 +596,252 @@ class SqliteConverter:
             results['duration'] = (end_time - start_time).total_seconds()
             
         return results
+    
+    def _get_table_definition_robust(self, tps, table_number, table_name):
+        """
+        Get table definition with robust error handling for problematic tables
+        
+        Args:
+            tps: TopSpeed file object
+            table_number: Table number
+            table_name: Table name for logging
+            
+        Returns:
+            Table definition object or None if parsing fails
+        """
+        try:
+            # Try normal table definition parsing
+            return tps.tables.get_definition(table_number)
+        except Exception as e:
+            # If parsing fails, try to create a more sophisticated table definition
+            self.logger.warning(f"Failed to parse table definition for {table_name}: {e}")
+            self.logger.info(f"Attempting to create enhanced table definition for {table_name}")
+            
+            # Try to extract information from raw definition bytes
+            try:
+                table = tps.tables._TpsTablesList__tables[table_number]
+                if hasattr(table, 'definition_bytes'):
+                    # Analyze the raw bytes to understand the structure
+                    enhanced_def = self._create_enhanced_table_definition(table_name, table.definition_bytes)
+                    if enhanced_def:
+                        self.logger.info(f"Created enhanced table definition for {table_name}")
+                        return enhanced_def
+            except Exception as enhanced_error:
+                self.logger.warning(f"Enhanced parsing also failed for {table_name}: {enhanced_error}")
+            
+            # Fall back to minimal table definition
+            self.logger.info(f"Creating minimal table definition for {table_name}")
+            
+            # Create a minimal table definition that can be processed
+            class MinimalTableDef:
+                def __init__(self, name):
+                    self.name = name
+                    self.fields = []
+                    self.memos = []
+                    self.indexes = []
+                    self.record_size = 0
+                    self.field_count = 0
+                    self.memo_count = 0
+                    self.index_count = 0
+            
+            return MinimalTableDef(table_name)
+    
+    def _migrate_large_array_table_data(self, tps, table_name: str, sanitized_table_name: str, 
+                                      conn: sqlite3.Connection, table_def) -> int:
+        """
+        Migrate data for large array tables using raw record access
+        
+        Args:
+            tps: TopSpeed file object
+            table_name: Original table name
+            sanitized_table_name: Sanitized table name
+            conn: SQLite connection
+            table_def: Enhanced table definition
+            
+        Returns:
+            Number of records migrated
+        """
+        cursor = conn.cursor()
+        record_count = 0
+        
+        try:
+            self.logger.info(f"Migrating large array table {table_name} using raw record access")
+            
+            # Get the table number
+            table_number = tps.current_table_number
+            
+            # Access raw records directly from pages
+            self.logger.info(f"Looking for records in table {table_number} for {table_name}")
+            
+            for page_ref in tps.pages.list():
+                if tps.pages[page_ref].hierarchy_level == 0:
+                    page = tps.pages[page_ref]
+                    self.logger.info(f"Processing page {page_ref}")
+                    
+                    # Get records from this page
+                    from pytopspeed.tpsrecord import TpsRecordsList
+                    records = TpsRecordsList(tps, page, encoding='cp1251', check=True)
+                    
+                    page_record_count = 0
+                    for record in records:
+                        if record.type == 'DATA':
+                            # Check if this record belongs to our table
+                            record_table_number = None
+                            if hasattr(record.data, 'table_number'):
+                                record_table_number = record.data.table_number
+                            elif hasattr(record, 'table_number'):
+                                record_table_number = record.table_number
+                            
+                            if record_table_number == table_number:
+                                try:
+                                    # Extract raw data
+                                    raw_data = None
+                                    if hasattr(record.data.data, 'data'):
+                                        raw_data = record.data.data.data
+                                    elif hasattr(record.data, 'data'):
+                                        raw_data = record.data.data
+                                    elif hasattr(record, 'data'):
+                                        raw_data = record.data
+                                    
+                                    if raw_data is None:
+                                        self.logger.warning(f"No raw data found for record in {table_name}")
+                                        continue
+                                    
+                                    # For large array tables, store the entire record as JSON
+                                    import json
+                                    
+                                    # Convert raw bytes to a more readable format
+                                    parsed_data = {}
+                                    
+                                    # Store the raw data as base64 encoded JSON
+                                    import base64
+                                    raw_data_b64 = base64.b64encode(raw_data).decode('ascii')
+                                    parsed_data['raw_data'] = raw_data_b64
+                                    parsed_data['data_size'] = len(raw_data)
+                                    
+                                    # Try to extract some basic information if possible
+                                    if len(raw_data) >= 4:
+                                        # Try to extract first few bytes as potential IDs
+                                        parsed_data['first_4_bytes'] = raw_data[:4].hex()
+                                    
+                                    # Insert into SQLite
+                                    json_data = json.dumps(parsed_data)
+                                    
+                                    # Get the field name for the JSON data
+                                    json_field_name = f"{table_name}_ARRAY_DATA"
+                                    
+                                    # Create INSERT statement
+                                    insert_sql = f'INSERT INTO "{sanitized_table_name}" ("{json_field_name}") VALUES (?)'
+                                    
+                                    cursor.execute(insert_sql, (json_data,))
+                                    record_count += 1
+                                    page_record_count += 1
+                                    
+                                    # Commit every 100 records for performance and memory management
+                                    if record_count % 100 == 0:
+                                        conn.commit()
+                                        self.logger.info(f"Progress: {record_count} records migrated from {table_name}")
+                                        
+                                        # Memory cleanup for large tables
+                                        if record_count % 1000 == 0:
+                                            import gc
+                                            gc.collect()
+                                
+                                except Exception as e:
+                                    self.logger.warning(f"Error processing record in {table_name}: {e}")
+                                    continue
+                    
+                    self.logger.info(f"Page {page_ref}: {page_record_count} records found for {table_name}")
+                    
+                    # Don't break - process all pages to find all records
+            
+            conn.commit()
+            self.logger.info(f"Migrated {record_count} records from {table_name}")
+            return record_count
+            
+        except Exception as e:
+            self.logger.error(f"Error migrating data for table {table_name}: {e}")
+            conn.rollback()
+            return 0
+    
+    def _create_enhanced_table_definition(self, table_name, definition_bytes):
+        """
+        Create an enhanced table definition by analyzing raw definition bytes
+        
+        Args:
+            table_name: Name of the table
+            definition_bytes: Raw definition bytes from the table
+            
+        Returns:
+            Enhanced table definition or None if analysis fails
+        """
+        try:
+            # Combine all definition bytes
+            combined_bytes = b''
+            for key in sorted(definition_bytes.keys()):
+                combined_bytes += definition_bytes[key]
+            
+            # Try to extract basic information from the header
+            if len(combined_bytes) < 10:
+                return None
+            
+            # Parse the header (first 10 bytes)
+            import struct
+            min_version_driver = struct.unpack('<H', combined_bytes[0:2])[0]
+            record_size = struct.unpack('<H', combined_bytes[2:4])[0]
+            field_count = struct.unpack('<H', combined_bytes[4:6])[0]
+            memo_count = struct.unpack('<H', combined_bytes[6:8])[0]
+            index_count = struct.unpack('<H', combined_bytes[8:10])[0]
+            
+            self.logger.info(f"Enhanced parsing for {table_name}: {field_count} fields, {memo_count} memos, {index_count} indexes, record_size={record_size}")
+            
+            # Create enhanced table definition
+            class EnhancedTableDef:
+                def __init__(self, name, field_count, memo_count, index_count, record_size):
+                    self.name = name
+                    self.fields = []
+                    self.memos = []
+                    self.indexes = []
+                    self.record_size = record_size
+                    self.field_count = field_count
+                    self.memo_count = memo_count
+                    self.index_count = index_count
+                    
+                    # Create placeholder fields for large arrays
+                    # This allows the table to be created with a reasonable structure
+                    if field_count is not None and field_count > 30:  # Likely a large array table (lowered threshold for FORCAST)
+                        # Create a single JSON field to hold all array data
+                        class ArrayField:
+                            def __init__(self, name, field_type, size):
+                                self.name = name
+                                self.type = field_type
+                                self.size = size
+                                self.offset = 0
+                                self.array_element_count = 1
+                                self.array_element_size = size
+                        
+                        # Add a single JSON field for the entire array
+                        self.fields.append(ArrayField(f"{name}_ARRAY_DATA", "JSON", record_size))
+                    else:
+                        # For smaller tables, create individual fields
+                        for i in range(min(field_count, 20)):  # Limit to 20 fields max
+                            class SimpleField:
+                                def __init__(self, name, field_type, size, offset):
+                                    self.name = name
+                                    self.type = field_type
+                                    self.size = size
+                                    self.offset = offset
+                                    self.array_element_count = 1
+                                    self.array_element_size = size
+                            
+                            field_size = max(8, record_size // field_count) if field_count > 0 else 8
+                            self.fields.append(SimpleField(f"{name}_FIELD_{i+1}", "TEXT", field_size, i * field_size))
+            
+            return EnhancedTableDef(table_name, field_count, memo_count, index_count, record_size)
+            
+        except Exception as e:
+            self.logger.warning(f"Enhanced table definition creation failed: {e}")
+            return None
     
     def convert_multiple(self, input_files: List[str], output_file: str) -> Dict[str, Any]:
         """

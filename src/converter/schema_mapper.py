@@ -163,7 +163,7 @@ class TopSpeedToSQLiteMapper:
         
         # Use multidimensional handler to create schema if arrays are detected
         if analysis['has_arrays']:
-            return self.multidimensional_handler.create_sqlite_schema(sanitized_table_name, analysis)
+            return self.multidimensional_handler.create_sqlite_schema(sanitized_table_name, analysis, table_def)
         
         # Fall back to original logic for regular tables
         # Start building the CREATE TABLE statement
@@ -180,6 +180,10 @@ class TopSpeedToSQLiteMapper:
         for memo in table_def.memos:
             sanitized_memo_name = self.sanitize_field_name(memo.name)
             field_definitions.append(f"    {sanitized_memo_name} BLOB")
+        
+        # Handle empty tables (no fields or memos) - add a dummy column to avoid SQL syntax error
+        if not field_definitions:
+            field_definitions.append("    id INTEGER")
         
         # Join field definitions
         sql_parts.append(",\n".join(field_definitions))
@@ -275,7 +279,7 @@ class TopSpeedToSQLiteMapper:
         if file_prefix:
             sanitized_table_name = f"{file_prefix}{sanitized_table_name}"
         
-        create_table_sql = self.multidimensional_handler.create_sqlite_schema(sanitized_table_name, table_structure)
+        create_table_sql = self.multidimensional_handler.create_sqlite_schema(sanitized_table_name, table_structure, table_def)
         
         result = {
             'table_name': sanitized_table_name,

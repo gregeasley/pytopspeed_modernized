@@ -15,11 +15,11 @@ This directory contains comprehensive examples demonstrating how to use the Pyto
 
 ### 2. Advanced Examples
 
-- **`multidimensional_arrays.py`** - **NEW** - Handle TopSpeed multidimensional arrays and JSON conversion
+- **`multidimensional_arrays.py`** - Handle TopSpeed multidimensional arrays and JSON conversion
+- **`resilient_conversion_example.py`** - **NEW** - Enterprise resilience features for large databases
+- **`robust_conversion_example.py`** - Robust error handling and recovery
 - **`cli_usage_examples.py`** - Demonstrate CLI usage patterns
-- **`custom_progress_tracking.py`** - Custom progress tracking implementation
-- **`batch_processing.py`** - Batch processing with custom settings
-- **`error_handling.py`** - Comprehensive error handling examples
+- **`performance_optimization_example.py`** - Performance optimization techniques
 
 ### 3. Integration Examples
 
@@ -104,29 +104,34 @@ Complete round-trip conversion:
 
 ### Advanced Examples
 
+#### resilient_conversion_example.py
+**Enterprise resilience features for large databases:**
+- Memory management with configurable limits
+- Adaptive batch sizing based on table characteristics
+- Progress tracking for long-running conversions
+- Error recovery with partial conversion support
+- Predefined configurations for different database sizes
+- Performance optimization for enterprise-scale databases
+
+#### robust_conversion_example.py
+**Robust error handling and recovery:**
+- Graceful handling of individual record failures
+- Continuation of processing despite parsing errors
+- Detailed error logging for troubleshooting
+- Partial conversion support for interrupted operations
+
 #### cli_usage_examples.py
-Demonstrates CLI usage patterns:
+**CLI usage patterns:**
 - Help system
 - Command variations
 - Error handling
 
-#### custom_progress_tracking.py
-Custom progress tracking:
-- Real-time progress bars
-- Detailed logging
-- Performance metrics
-
-#### batch_processing.py
-Batch processing with custom settings:
-- Configurable batch sizes
-- Memory optimization
-- Performance tuning
-
-#### error_handling.py
-Comprehensive error handling:
-- Try-catch blocks
-- Error recovery
-- Graceful degradation
+#### performance_optimization_example.py
+**Performance optimization techniques:**
+- SQLite tuning with WAL mode
+- Memory optimization strategies
+- Batch size optimization
+- Parallel processing configuration
 
 ### Integration Examples
 
@@ -237,8 +242,24 @@ python examples/run_all_examples.py
 # Test basic conversion
 python examples/convert_phd_to_sqlite.py --test
 
+# Test resilience features
+python examples/resilient_conversion_example.py
+
 # Test with validation
 python examples/data_validation.py --input output.sqlite
+```
+
+### Resilience Examples
+
+```bash
+# Test enterprise resilience features
+python examples/resilient_conversion_example.py
+
+# Test robust error handling
+python examples/robust_conversion_example.py
+
+# Test performance optimization
+python examples/performance_optimization_example.py
 ```
 
 ## 📝 Adding New Examples

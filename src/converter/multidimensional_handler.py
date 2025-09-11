@@ -241,7 +241,7 @@ class MultidimensionalHandler:
         
         return array_data
     
-    def create_sqlite_schema(self, table_name: str, analysis: Dict[str, Any]) -> str:
+    def create_sqlite_schema(self, table_name: str, analysis: Dict[str, Any], table_def=None) -> str:
         """Create SQLite schema for a table with multi-dimensional fields"""
         columns = []
         
@@ -255,6 +255,16 @@ class MultidimensionalHandler:
         for array_info in analysis['array_fields']:
             field_name = self._sanitize_field_name(array_info.base_name)
             columns.append(f'"{field_name}" TEXT')  # JSON stored as TEXT
+        
+        # Add memo fields as BLOB (if table_def is provided)
+        if table_def and hasattr(table_def, 'memos') and table_def.memos:
+            for memo in table_def.memos:
+                memo_name = self._sanitize_field_name(memo.name)
+                columns.append(f'"{memo_name}" BLOB')
+        
+        # Handle empty tables (no columns) - add a dummy column to avoid SQL syntax error
+        if not columns:
+            columns.append('"id" INTEGER')
         
         return f'CREATE TABLE "{table_name}" ({", ".join(columns)})'
     
@@ -290,7 +300,8 @@ class MultidimensionalHandler:
             'DOUBLE': 'REAL',
             'SHORT': 'INTEGER',
             'LONG': 'INTEGER',
-            'BYTE': 'INTEGER'
+            'BYTE': 'INTEGER',
+            'JSON': 'TEXT'  # JSON data stored as TEXT
         }
         return type_mapping.get(field_type, 'TEXT')
     

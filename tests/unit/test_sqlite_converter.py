@@ -257,7 +257,8 @@ class TestSchemaCreation:
         """Test basic schema creation"""
         converter = SqliteConverter()
         
-        conn = sqlite3.connect(temp_sqlite_db)
+        # temp_sqlite_db is already a connection object
+        conn = temp_sqlite_db
         try:
             table_mapping = converter._create_schema(sample_tps, conn)
             
@@ -282,7 +283,7 @@ class TestSchemaCreation:
         """Test that table mapping is correct"""
         converter = SqliteConverter()
         
-        conn = sqlite3.connect(temp_sqlite_db)
+        conn = temp_sqlite_db
         try:
             table_mapping = converter._create_schema(sample_tps, conn)
             
@@ -308,7 +309,7 @@ class TestDataMigration:
         converter = SqliteConverter()
         
         # First create schema
-        conn = sqlite3.connect(temp_sqlite_db)
+        conn = temp_sqlite_db
         try:
             table_mapping = converter._create_schema(sample_tps, conn)
             
@@ -347,7 +348,7 @@ class TestDataMigration:
                     break
         
         if empty_table_name:
-            conn = sqlite3.connect(temp_sqlite_db)
+            conn = temp_sqlite_db
             try:
                 table_mapping = converter._create_schema(sample_tps, conn)
                 
@@ -430,7 +431,7 @@ class TestErrorHandling:
         # Test with invalid table name
         record_count = converter._migrate_table_data(
             sample_tps, "INVALID_TABLE", "INVALID_TABLE", 
-            sqlite3.connect(temp_sqlite_db)
+            temp_sqlite_db
         )
         
         assert record_count == 0
