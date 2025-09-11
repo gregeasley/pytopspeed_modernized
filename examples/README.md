@@ -15,6 +15,7 @@ This directory contains comprehensive examples demonstrating how to use the Pyto
 
 ### 2. Advanced Examples
 
+- **`multidimensional_arrays.py`** - **NEW** - Handle TopSpeed multidimensional arrays and JSON conversion
 - **`cli_usage_examples.py`** - Demonstrate CLI usage patterns
 - **`custom_progress_tracking.py`** - Custom progress tracking implementation
 - **`batch_processing.py`** - Batch processing with custom settings

@@ -6,6 +6,7 @@ This document provides comprehensive API documentation for the Pytopspeed Modern
 
 - [Core Classes](#core-classes)
 - [SQLite Converter](#sqlite-converter)
+- [Multidimensional Handler](#multidimensional-handler)
 - [PHZ Converter](#phz-converter)
 - [Reverse Converter](#reverse-converter)
 - [Schema Mapper](#schema-mapper)
@@ -96,6 +97,113 @@ convert_multiple(input_files: List[str], output_file: str) -> Dict[str, Any]
 ```python
 files = ['file1.phd', 'file2.mod']
 results = converter.convert_multiple(files, 'combined.sqlite')
+```
+
+### MultidimensionalHandler
+
+Advanced class for handling TopSpeed multidimensional arrays and converting them to JSON format in SQLite.
+
+**Use for**: Automatic detection and conversion of array fields in TopSpeed tables
+
+```python
+from converter.multidimensional_handler import MultidimensionalHandler
+```
+
+#### Constructor
+
+```python
+MultidimensionalHandler()
+```
+
+#### Key Methods
+
+##### analyze_table_structure()
+
+Analyzes a TopSpeed table definition to detect multidimensional arrays.
+
+```python
+analysis = handler.analyze_table_structure(table_def)
+```
+
+**Parameters:**
+- `table_def`: TopSpeed table definition object
+
+**Returns:**
+- `Dict[str, Any]`: Analysis results containing:
+  - `has_arrays` (bool): Whether the table contains arrays
+  - `array_fields` (List[ArrayFieldInfo]): Detected array fields
+  - `regular_fields` (List): Non-array fields
+  - `total_record_size` (int): Calculated record size
+
+##### create_sqlite_schema()
+
+Creates SQLite schema for tables with multidimensional fields.
+
+```python
+sql = handler.create_sqlite_schema("TABLE_NAME", analysis)
+```
+
+**Parameters:**
+- `table_name` (str): Name of the SQLite table
+- `analysis` (Dict): Analysis results from `analyze_table_structure()`
+
+**Returns:**
+- `str`: CREATE TABLE SQL statement
+
+#### ArrayFieldInfo
+
+Data class representing information about a detected array field.
+
+```python
+@dataclass
+class ArrayFieldInfo:
+    base_name: str              # Base field name (e.g., "PROD1")
+    element_type: str           # Data type of array elements
+    element_size: int           # Size of each element in bytes
+    array_size: int             # Number of elements in array
+    start_offset: int           # Starting offset in record
+    element_offsets: List[int]  # Offset of each element
+    is_single_field_array: bool # Whether this is a single large field
+```
+
+#### Array Detection Types
+
+1. **Single-Field Arrays**: Large fields containing multiple elements
+   - Example: 96-byte `DAT:PROD1` field with 12 DOUBLE elements
+   - Detected using `array_element_count` attribute from TopSpeed schema
+
+2. **Multi-Field Arrays**: Multiple small fields forming an array
+   - Example: `CUM:PROD1`, `CUM:PROD2`, `CUM:PROD3` fields
+   - Detected by analyzing field name patterns and offsets
+
+#### Data Type Handling
+
+- **DOUBLE Arrays**: Preserved as JSON arrays of numbers
+- **BYTE Arrays**: Converted to JSON arrays of booleans (`true`/`false`)
+- **STRING Arrays**: Maintained as JSON arrays of strings
+- **Null vs Zero**: Distinguishes between `null` (missing data) and `0.0` (actual zero)
+
+#### Example Usage
+
+```python
+from converter.multidimensional_handler import MultidimensionalHandler
+
+# Create handler
+handler = MultidimensionalHandler()
+
+# Analyze table structure
+analysis = handler.analyze_table_structure(table_def)
+
+if analysis['has_arrays']:
+    print(f"Found {len(analysis['array_fields'])} array fields")
+    
+    # Create SQLite schema
+    sql = handler.create_sqlite_schema("MONHIST", analysis)
+    print(sql)
+    
+    # Process record data
+    parsed_data = handler.parse_record_data(raw_data, analysis)
+    print(parsed_data)
 ```
 
 ### PhzConverter

@@ -4,19 +4,20 @@ A modernized Python library for converting Clarion TopSpeed database files (.phd
 
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Tests](https://img.shields.io/badge/tests-88%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-222%20passing-brightgreen.svg)](tests/)
 
 ## 🚀 Features
 
 - **Multi-format Support**: Convert .phd, .mod, .tps, and .phz files
+- **Multidimensional Arrays**: Advanced handling of TopSpeed array fields with JSON storage
 - **Combined Conversion**: Merge multiple TopSpeed files into a single SQLite database
 - **Reverse Conversion**: Convert SQLite databases back to TopSpeed files
 - **PHZ Support**: Handle zip archives containing TopSpeed files
 - **Progress Tracking**: Real-time progress reporting and detailed logging
-- **Data Integrity**: Preserve all data types and relationships
+- **Data Integrity**: Preserve all data types, relationships, and null vs zero distinctions
 - **CLI Interface**: Easy-to-use command-line tools
 - **Python API**: Programmatic access to all functionality
-- **Comprehensive Testing**: 88+ unit tests and integration tests
+- **Comprehensive Testing**: 222+ unit tests and integration tests
 
 ## 📋 Supported File Formats
 
@@ -70,6 +71,58 @@ from converter.reverse_converter import ReverseConverter
 
 converter = ReverseConverter()
 result = converter.convert_sqlite_to_topspeed('input.sqlite', 'output_directory/')
+```
+
+## 🔄 Multidimensional Array Handling
+
+Pytopspeed Modernized includes advanced support for TopSpeed multidimensional arrays, automatically detecting and converting array fields to JSON format in SQLite.
+
+### Array Detection
+
+The system automatically detects two types of arrays:
+
+1. **Single-Field Arrays**: Large fields containing multiple elements (e.g., 96-byte `DAT:PROD1` with 12 elements)
+2. **Multi-Field Arrays**: Multiple small fields forming an array (e.g., `CUM:PROD1`, `CUM:PROD2`, etc.)
+
+### Example: MONHIST Table
+
+```python
+# TopSpeed structure
+DAT:PROD1    # 96-byte field with 12 DOUBLE elements
+DAT:PROD2    # 96-byte field with 12 DOUBLE elements
+DAT:PROD3    # 96-byte field with 12 DOUBLE elements
+
+# SQLite result
+PROD1        # JSON: [1.5, 2.3, 0.0, null, ...]
+PROD2        # JSON: [0.8, 1.2, 0.0, null, ...]
+PROD3        # JSON: [2.1, 1.8, 0.0, null, ...]
+```
+
+### Data Type Preservation
+
+- **Zero vs NULL**: Distinguishes between actual zero values (`0.0`) and missing data (`null`)
+- **Boolean Arrays**: Converts `BYTE` arrays to proper boolean values (`true`/`false`)
+- **Numeric Arrays**: Preserves `DOUBLE`, `LONG`, `SHORT` precision
+- **String Arrays**: Maintains text encoding and length
+
+### Querying Array Data
+
+```sql
+-- Query array elements
+SELECT 
+    LSE_ID,
+    json_extract(PROD1, '$[0]') as PROD1_Month1,
+    json_extract(PROD1, '$[1]') as PROD1_Month2
+FROM MONHIST;
+
+-- Filter by array content
+SELECT * FROM MONHIST 
+WHERE json_extract(PROD1, '$[0]') > 100.0;
+
+-- Count non-null elements
+SELECT LSE_ID,
+       json_array_length(PROD1) as PROD1_Count
+FROM MONHIST;
 ```
 
 ## 🛠️ Quick Start
