@@ -109,6 +109,9 @@ def mock_field():
             self.type = type
             self.length = length
             self.size = length  # Add size attribute for compatibility
+            self.offset = 0  # Add offset attribute for multidimensional handler (integer)
+            self.array_element_count = 1  # Add array_element_count for multidimensional handler (integer)
+            self.array_element_size = None  # Add array_element_size for multidimensional handler
     
     return MockField("TEST_FIELD", "STRING", 50)
 

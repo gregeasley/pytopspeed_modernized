@@ -160,12 +160,20 @@ class TestCreateTableSQL:
                 self.type = type
                 self.length = length
                 self.size = length  # Add size attribute for compatibility
+                self.offset = 0  # Add offset attribute for multidimensional handler
+                self.array_element_count = 1  # Add array_element_count for multidimensional handler
+                self.array_element_size = None  # Add array_element_size for multidimensional handler
         
         fields = [
-            MockField("FIELD1", "STRING", 50),
-            MockField("FIELD2", "LONG", 0),
-            MockField("FIELD3", "DOUBLE", 0)
+            MockField("NAME", "STRING", 50),
+            MockField("AGE", "LONG", 0),
+            MockField("PRICE", "DOUBLE", 0)
         ]
+        
+        # Set different offsets to prevent array detection
+        fields[0].offset = 0
+        fields[1].offset = 50
+        fields[2].offset = 100
         
         class MockTableDef:
             def __init__(self):
@@ -175,9 +183,9 @@ class TestCreateTableSQL:
         table_def = MockTableDef()
         sql = mapper.generate_create_table_sql("TEST_TABLE", table_def)
         
-        assert "FIELD1" in sql
-        assert "FIELD2" in sql
-        assert "FIELD3" in sql
+        assert "NAME" in sql
+        assert "AGE" in sql
+        assert "PRICE" in sql
         assert "TEXT" in sql
         assert "INTEGER" in sql
         assert "REAL" in sql
@@ -208,6 +216,9 @@ class TestCreateTableSQL:
                 self.type = type
                 self.length = length
                 self.size = length  # Add size attribute for compatibility
+                self.offset = 0  # Add offset attribute for multidimensional handler
+                self.array_element_count = 1  # Add array_element_count for multidimensional handler
+                self.array_element_size = None  # Add array_element_size for multidimensional handler
         
         field = MockField("TIT:PROJ_DESCR", "STRING", 50)
         

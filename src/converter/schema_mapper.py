@@ -4,6 +4,7 @@ Schema Mapper for converting TopSpeed table definitions to SQLite CREATE TABLE s
 
 import sqlite3
 from typing import Dict, List, Optional, Tuple
+from .multidimensional_handler import MultidimensionalHandler
 
 
 class TopSpeedToSQLiteMapper:
@@ -31,6 +32,7 @@ class TopSpeedToSQLiteMapper:
     
     def __init__(self):
         self.table_definitions = {}
+        self.multidimensional_handler = MultidimensionalHandler()
     
     def map_field_type(self, topspeed_type: str, size: int) -> str:
         """
@@ -102,6 +104,10 @@ class TopSpeedToSQLiteMapper:
         Returns:
             Sanitized table name
         """
+        # Convert to string if it's a Container object
+        if hasattr(name, '__str__') and not isinstance(name, str):
+            name = str(name)
+        
         # Similar to field names but with additional considerations
         sanitized = name.replace(' ', '_')
         sanitized = sanitized.replace('-', '_')
@@ -152,6 +158,14 @@ class TopSpeedToSQLiteMapper:
         """
         sanitized_table_name = self.sanitize_table_name(table_name)
         
+        # Analyze table structure for multi-dimensional fields
+        analysis = self.multidimensional_handler.analyze_table_structure(table_def)
+        
+        # Use multidimensional handler to create schema if arrays are detected
+        if analysis['has_arrays']:
+            return self.multidimensional_handler.create_sqlite_schema(sanitized_table_name, analysis)
+        
+        # Fall back to original logic for regular tables
         # Start building the CREATE TABLE statement
         sql_parts = [f"CREATE TABLE {sanitized_table_name} ("]
         
@@ -221,15 +235,18 @@ class TopSpeedToSQLiteMapper:
         Returns:
             Dictionary with 'create_table' and 'create_indexes' keys
         """
+        # Convert table_name to string if it's a Container object
+        table_name_str = str(table_name) if hasattr(table_name, '__str__') else table_name
+        
         result = {
-            'table_name': self.sanitize_table_name(table_name),
-            'create_table': self.generate_create_table_sql(table_name, table_def),
+            'table_name': self.sanitize_table_name(table_name_str),
+            'create_table': self.generate_create_table_sql(table_name_str, table_def),
             'create_indexes': []
         }
         
         # Add index creation statements
         for index in table_def.indexes:
-            index_sql = self.generate_create_index_sql(table_name, index, table_def)
+            index_sql = self.generate_create_index_sql(table_name_str, index, table_def)
             if index_sql:
                 result['create_indexes'].append(index_sql)
         

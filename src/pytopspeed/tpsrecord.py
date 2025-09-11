@@ -68,33 +68,36 @@ class TpsRecord:
                 # Handle TABLE_NAME records separately - they have a different structure
                 self.type = 'TABLE_NAME'
                 # Manually parse the table name from the raw bytes
-                # Structure: data_size(2) + first_byte(1) + table_name(variable)
+                # Structure: data_size(2) + first_byte(1) + table_name(variable) + table_number(1)
                 if len(self.data_bytes) > 3:
-                    # Calculate the exact name length: data_size - 3 (header bytes: data_size + first_byte)
+                    # Calculate the exact name length: data_size - 4 (header bytes: data_size + first_byte + table_number)
                     data_size = int.from_bytes(self.data_bytes[0:2], 'little')
-                    name_length = data_size - 3
+                    name_length = data_size - 4
                     if name_length > 0:
                         # Extract table name starting from byte 3
                         name_bytes = self.data_bytes[3:3+name_length]
                         try:
                             table_name = name_bytes.decode('ascii', errors='replace').rstrip('\x00')
+                            # Extract table number from the last byte
+                            table_number = self.data_bytes[-1] if len(self.data_bytes) > 0 else 0
                             # Create a mock data structure for TABLE_NAME
-                            # Note: table_number will be set later based on positional mapping
                             self.data = type('MockData', (), {
                                 'table_name': table_name,
-                                'table_number': -1,  # Placeholder - will be set by positional mapping
+                                'table_number': table_number,  # Extract from raw data
                                 'data_size': data_size
                             })()
                         except:
                             self.data = type('MockData', (), {
                                 'table_name': '',
-                                'table_number': -1,
+                                'table_number': 0,
                                 'data_size': data_size
                             })()
                     else:
+                        # Extract table number from the last byte even if no name
+                        table_number = self.data_bytes[-1] if len(self.data_bytes) > 0 else 0
                         self.data = type('MockData', (), {
                             'table_name': '',
-                            'table_number': -1,
+                            'table_number': table_number,
                             'data_size': data_size
                         })()
             else:

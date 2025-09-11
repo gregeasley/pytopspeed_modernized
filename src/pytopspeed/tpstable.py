@@ -170,14 +170,16 @@ class TpsTablesList:
                             table_def_numbers.append(table_num)
                             seen_table_nums.add(table_num)
 
-        # Create positional mapping: TABLE_NAME records map to TABLE_DEFINITION table numbers by position
+        # Now that TABLE_NAME records have the correct table numbers from raw data,
+        # we can use direct mapping instead of positional mapping
         table_name_mapping = {}
-        for i, table_name_record in enumerate(table_names):
-            if i < len(table_def_numbers):
-                correct_table_number = table_def_numbers[i]
-                table_name_mapping[correct_table_number] = table_name_record.data.table_name
-                # Update the record's table number
-                table_name_record.data.table_number = correct_table_number
+        
+        # Map TABLE_NAME records to their correct table numbers (from raw data)
+        for table_name_record in table_names:
+            table_number = table_name_record.data.table_number
+            table_name = table_name_record.data.table_name
+            if table_number > 0:  # Valid table number
+                table_name_mapping[table_number] = table_name
 
         # Second pass: process all records with correct table numbers
         for page_ref in reversed(self.__tps.pages.list()):
@@ -187,9 +189,9 @@ class TpsTablesList:
                     if record.type != 'NULL' and record.data.table_number not in self.__tables.keys():
                         self.__tables[record.data.table_number] = TpsTable(record.data.table_number)
                     if record.type == 'TABLE_NAME':
-                        # Use the mapped table number
+                        # Use the correct table name from the mapping
                         if record.data.table_number in table_name_mapping:
-                            self.__tables[record.data.table_number].set_name(record.data.table_name)
+                            self.__tables[record.data.table_number].set_name(table_name_mapping[record.data.table_number])
                     if record.type == 'TABLE_DEFINITION':
                         self.__tables[record.data.table_number].add_definition(record.data.data.table_definition_bytes)
                     if record.type == 'METADATA':

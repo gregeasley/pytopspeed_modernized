@@ -66,6 +66,9 @@ class TestCombinedConversion:
             mock_field.name = 'FIELD1'
             mock_field.type = 'STRING'
             mock_field.size = 50
+            mock_field.offset = 0
+            mock_field.array_element_count = 1
+            mock_field.array_element_size = None
             
             # Create proper mock index field objects
             mock_index_field = Mock()
@@ -137,6 +140,9 @@ class TestCombinedConversion:
             mock_field.name = 'MODFIELD1'
             mock_field.type = 'LONG'
             mock_field.size = 4
+            mock_field.offset = 0
+            mock_field.array_element_count = 1
+            mock_field.array_element_size = None
             
             # Create proper mock index field objects
             mock_index_field = Mock()

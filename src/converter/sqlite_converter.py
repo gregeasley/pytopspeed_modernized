@@ -170,6 +170,135 @@ class SqliteConverter:
         
         return tuple(values)
     
+    def _convert_multidimensional_record_to_tuple(self, record, table_def, analysis) -> Tuple:
+        """
+        Convert a TopSpeed record with multi-dimensional arrays to a tuple for SQLite insertion
+        
+        Args:
+            record: TopSpeed record (dict or object)
+            table_def: Table definition
+            analysis: Multidimensional analysis result
+            
+        Returns:
+            Tuple of converted values
+        """
+        values = []
+        
+        try:
+            # Handle dictionary records (from TPS iterator)
+            if isinstance(record, dict):
+                # Build values in the correct order for field_names
+                for field_name in analysis['regular_fields']:
+                    sanitized_name = self.schema_mapper.sanitize_field_name(field_name.name)
+                    values.append(record.get(field_name.name, None))
+                
+                # Handle array fields - combine individual array elements into JSON
+                for array_info in analysis['array_fields']:
+                    array_values = []
+                    for i in range(array_info.array_size):
+                        # Look for individual array elements in the record
+                        element_name = f"{array_info.base_name}{i+1}"
+                        element_value = record.get(element_name, None)
+                        array_values.append(element_value)
+                    
+                    # Convert to JSON
+                    import json
+                    values.append(json.dumps(array_values))
+                
+                return tuple(values)
+            
+            # Handle raw record objects
+            elif hasattr(record, 'data') and hasattr(record.data, 'data'):
+                raw_data = record.data.data
+                
+                # Handle Container objects
+                if hasattr(raw_data, 'data'):
+                    raw_data = raw_data.data
+                
+                if isinstance(raw_data, bytes):
+                    # Parse regular fields directly from raw data
+                    for field in analysis['regular_fields']:
+                        try:
+                            if field.offset < len(raw_data):
+                                field_size = getattr(field, 'size', 8)
+                                field_data = raw_data[field.offset:field.offset + field_size]
+                                
+                                if field.type == 'SHORT':
+                                    import struct
+                                    value = struct.unpack('<h', field_data)[0]
+                                elif field.type == 'LONG':
+                                    import struct
+                                    value = struct.unpack('<l', field_data)[0]
+                                elif field.type == 'DOUBLE':
+                                    import struct
+                                    value = struct.unpack('<d', field_data)[0]
+                                elif field.type == 'BYTE':
+                                    # Convert BYTE to boolean: 0 = False, non-zero = True
+                                    value = bool(field_data[0])
+                                elif field.type in ['BOOL', 'BOOLEAN']:
+                                    # Convert BOOL/BOOLEAN to boolean: 0 = False, non-zero = True
+                                    value = bool(field_data[0])
+                                else:
+                                    value = field_data.decode('utf-8', errors='ignore').rstrip('\x00')
+                                
+                                values.append(value)
+                            else:
+                                values.append(None)
+                        except Exception as e:
+                            self.logger.warning(f"Error parsing field {field.name}: {e}")
+                            values.append(None)
+                    
+                    # Parse array fields directly from raw data
+                    for array_info in analysis['array_fields']:
+                        try:
+                            array_values = []
+                            
+                            # Parse array elements from raw data
+                            for i in range(array_info.array_size):
+                                offset = array_info.start_offset + i * array_info.element_size
+                                if offset + array_info.element_size <= len(raw_data):
+                                    element_data = raw_data[offset:offset + array_info.element_size]
+                                    
+                                    if array_info.element_type == 'DOUBLE':
+                                        import struct
+                                        value = struct.unpack('<d', element_data)[0]
+                                    elif array_info.element_type == 'SHORT':
+                                        import struct
+                                        value = struct.unpack('<h', element_data)[0]
+                                    elif array_info.element_type == 'LONG':
+                                        import struct
+                                        value = struct.unpack('<l', element_data)[0]
+                                    elif array_info.element_type == 'BYTE':
+                                        # Convert BYTE to boolean: 0 = False, non-zero = True
+                                        value = bool(element_data[0])
+                                    elif array_info.element_type in ['BOOL', 'BOOLEAN']:
+                                        # Convert BOOL/BOOLEAN to boolean: 0 = False, non-zero = True
+                                        value = bool(element_data[0])
+                                    else:
+                                        value = element_data.decode('utf-8', errors='ignore').rstrip('\x00')
+                                    
+                                    array_values.append(value)
+                                else:
+                                    array_values.append(None)
+                            
+                            # Convert to JSON
+                            import json
+                            values.append(json.dumps(array_values))
+                            
+                        except Exception as e:
+                            self.logger.warning(f"Error parsing array {array_info.base_name}: {e}")
+                            values.append(None)
+                    
+                    return tuple(values)
+            
+            # Fall back to original conversion if multidimensional parsing fails
+            return self._convert_record_to_tuple(record, table_def)
+            
+        except Exception as e:
+            self.logger.warning(f"Error in multidimensional record conversion: {e}")
+            # Fall back to original conversion
+            return self._convert_record_to_tuple(record, table_def)
+    
     def _create_schema(self, tps: TPS, conn: sqlite3.Connection, file_prefix: str = "") -> Dict[str, str]:
         """
         Create SQLite schema from TopSpeed file
@@ -197,7 +326,8 @@ class SqliteConverter:
                     table_def = tps.tables.get_definition(table_number)
                     
                     # Map schema
-                    schema = self.schema_mapper.map_table_schema(table.name, table_def)
+                    table_name_str = str(table.name) if hasattr(table.name, '__str__') else table.name
+                    schema = self.schema_mapper.map_table_schema(table_name_str, table_def)
                     sanitized_table_name = schema['table_name']
                     
                     # Apply file prefix if provided
@@ -268,15 +398,31 @@ class SqliteConverter:
             tps.set_current_table(table_name)
             table_def = tps.tables.get_definition(tps.current_table_number)
             
+            # Analyze table structure for multi-dimensional fields
+            analysis = self.schema_mapper.multidimensional_handler.analyze_table_structure(table_def)
+            
             # Get field names for INSERT statement
             field_names = []
-            for field in table_def.fields:
-                sanitized_field_name = self.schema_mapper.sanitize_field_name(field.name)
-                field_names.append(sanitized_field_name)
-            
-            for memo in table_def.memos:
-                sanitized_memo_name = self.schema_mapper.sanitize_field_name(memo.name)
-                field_names.append(sanitized_memo_name)
+            if analysis['has_arrays']:
+                # Use multidimensional handler for tables with arrays
+                # Add regular fields
+                for field in analysis['regular_fields']:
+                    sanitized_field_name = self.schema_mapper.sanitize_field_name(field.name)
+                    field_names.append(sanitized_field_name)
+                
+                # Add array fields
+                for array_info in analysis['array_fields']:
+                    sanitized_field_name = self.schema_mapper.sanitize_field_name(array_info.base_name)
+                    field_names.append(sanitized_field_name)
+            else:
+                # Use original logic for regular tables
+                for field in table_def.fields:
+                    sanitized_field_name = self.schema_mapper.sanitize_field_name(field.name)
+                    field_names.append(sanitized_field_name)
+                
+                for memo in table_def.memos:
+                    sanitized_memo_name = self.schema_mapper.sanitize_field_name(memo.name)
+                    field_names.append(sanitized_memo_name)
             
             # Create INSERT statement
             placeholders = ', '.join(['?' for _ in field_names])
@@ -286,22 +432,88 @@ class SqliteConverter:
             batch = []
             record_count = 0
             
-            for record in tps:
-                try:
-                    # Convert record to tuple
-                    record_tuple = self._convert_record_to_tuple(record, table_def)
-                    batch.append(record_tuple)
+            if analysis['has_arrays']:
+                # Check if this table has single-field arrays (large fields) that need raw record access
+                # Single-field arrays are detected when the array is stored in one large field (like 96-byte DAT:PROD1)
+                # Multi-field arrays are detected when the array is stored in multiple small fields (like CUM:PROD1, CUM:PROD2, etc.)
+                has_single_field_arrays = any(
+                    # Check if this array was detected as a single-field array
+                    # Single-field arrays need raw record access for proper parsing
+                    array_info.is_single_field_array
+                    for array_info in analysis['array_fields']
+                )
+                
+                if has_single_field_arrays:
+                    # For tables with large single-field arrays (like MONHIST), access raw records directly
+                    # Get table number for raw record access
+                    table_number = None
+                    for num, table in tps.tables._TpsTablesList__tables.items():
+                        if table.name == table_name:
+                            table_number = num
+                            break
                     
-                    # Insert batch when it reaches batch_size
-                    if len(batch) >= self.batch_size:
-                        cursor.executemany(insert_sql, batch)
-                        record_count += len(batch)
-                        self._update_progress(record_count, 0, f"Migrated {record_count} records from {table_name}")
-                        batch = []
+                    if table_number is None:
+                        self.logger.error(f"Could not find table number for {table_name}")
+                        return 0
+                    
+                    # Access raw records directly using TpsRecordsList
+                    from pytopspeed.tpsrecord import TpsRecordsList
+                    
+                    for page_ref in tps.pages.list():
+                        if tps.pages[page_ref].hierarchy_level == 0:
+                            for record in TpsRecordsList(tps, tps.pages[page_ref], encoding='cp1251', check=True):
+                                if record.type == 'DATA' and record.data.table_number == table_number:
+                                    try:
+                                        # Convert multidimensional record to tuple
+                                        record_tuple = self._convert_multidimensional_record_to_tuple(record, table_def, analysis)
+                                        batch.append(record_tuple)
+                                        
+                                        # Insert batch when it reaches batch_size
+                                        if len(batch) >= self.batch_size:
+                                            cursor.executemany(insert_sql, batch)
+                                            record_count += len(batch)
+                                            self._update_progress(record_count, 0, f"Migrated {record_count} records from {table_name}")
+                                            batch = []
+                                            
+                                    except Exception as e:
+                                        self.logger.warning(f"Error processing record in {table_name}: {e}")
+                                        continue
+                else:
+                    # For tables with multi-field arrays (like CUMVOL), use regular TPS iterator
+                    for record in tps:
+                        try:
+                            # Convert multidimensional record to tuple
+                            record_tuple = self._convert_multidimensional_record_to_tuple(record, table_def, analysis)
+                            batch.append(record_tuple)
+                            
+                            # Insert batch when it reaches batch_size
+                            if len(batch) >= self.batch_size:
+                                cursor.executemany(insert_sql, batch)
+                                record_count += len(batch)
+                                self._update_progress(record_count, 0, f"Migrated {record_count} records from {table_name}")
+                                batch = []
+                                
+                        except Exception as e:
+                            self.logger.warning(f"Error processing record in {table_name}: {e}")
+                            continue
+            else:
+                # Use TPS iterator for regular tables
+                for record in tps:
+                    try:
+                        # Convert record to tuple using original logic
+                        record_tuple = self._convert_record_to_tuple(record, table_def)
+                        batch.append(record_tuple)
                         
-                except Exception as e:
-                    self.logger.warning(f"Error processing record in {table_name}: {e}")
-                    continue
+                        # Insert batch when it reaches batch_size
+                        if len(batch) >= self.batch_size:
+                            cursor.executemany(insert_sql, batch)
+                            record_count += len(batch)
+                            self._update_progress(record_count, 0, f"Migrated {record_count} records from {table_name}")
+                            batch = []
+                            
+                    except Exception as e:
+                        self.logger.warning(f"Error processing record in {table_name}: {e}")
+                        continue
             
             # Insert remaining records
             if batch:

@@ -6,7 +6,10 @@ import pytest
 import sqlite3
 import tempfile
 import os
+import json
+from unittest.mock import Mock, MagicMock
 from converter.sqlite_converter import SqliteConverter
+from converter.multidimensional_handler import ArrayFieldInfo
 
 
 class TestSqliteConverterInitialization:
@@ -431,3 +434,353 @@ class TestErrorHandling:
         )
         
         assert record_count == 0
+
+
+class TestMultidimensionalConversion:
+    """Test multidimensional array conversion functionality"""
+    
+    def test_convert_multidimensional_record_to_tuple_single_field_array(self):
+        """Test conversion of single-field array records"""
+        converter = SqliteConverter()
+        
+        # Mock array field info
+        array_info = ArrayFieldInfo(
+            base_name="TEST:BOOLPARAM",
+            element_type="BYTE",
+            element_size=1,
+            array_size=3,
+            start_offset=0,
+            element_offsets=[0, 1, 2],
+            is_single_field_array=True
+        )
+        
+        # Mock analysis
+        analysis = {
+            'has_arrays': True,
+            'array_fields': [array_info],
+            'regular_fields': []
+        }
+        
+        # Mock table definition
+        mock_table_def = Mock()
+        mock_table_def.fields = []
+        mock_table_def.memos = []
+        
+        # Mock record object with raw data (how raw TPS records are represented)
+        mock_record = Mock()
+        mock_record.data = Mock()
+        mock_record.data.data = b'\x01\x00\x01'  # Raw bytes: True, False, True
+        
+        result = converter._convert_multidimensional_record_to_tuple(
+            mock_record, mock_table_def, analysis
+        )
+        
+        assert len(result) == 1
+        assert result[0] == json.dumps([True, False, True])
+    
+    def test_convert_multidimensional_record_to_tuple_mixed_fields(self):
+        """Test conversion of records with both arrays and regular fields"""
+        converter = SqliteConverter()
+        
+        # Mock array field info
+        array_info = ArrayFieldInfo(
+            base_name="TEST:BOOLPARAM",
+            element_type="BYTE",
+            element_size=1,
+            array_size=2,
+            start_offset=2,
+            element_offsets=[2, 3],
+            is_single_field_array=True
+        )
+        
+        # Mock regular field
+        regular_field = Mock()
+        regular_field.name = "TEST:ID"
+        regular_field.type = "SHORT"
+        regular_field.offset = 0
+        regular_field.size = 2
+        
+        # Mock analysis
+        analysis = {
+            'has_arrays': True,
+            'array_fields': [array_info],
+            'regular_fields': [regular_field]
+        }
+        
+        # Mock record object with raw data (SHORT ID + 2 BYTE array)
+        mock_record = Mock()
+        mock_record.data = Mock()
+        mock_record.data.data = b'\x01\x00\x01\x00'  # ID=1, BOOLPARAM=[True, False]
+        
+        # Mock table definition
+        mock_table_def = Mock()
+        mock_table_def.fields = []
+        mock_table_def.memos = []
+        
+        result = converter._convert_multidimensional_record_to_tuple(
+            mock_record, mock_table_def, analysis
+        )
+        
+        assert len(result) == 2
+        assert result[0] == 1  # ID field
+        assert result[1] == json.dumps([True, False])  # BOOLPARAM array
+    
+    def test_convert_multidimensional_record_to_tuple_boolean_parsing(self):
+        """Test boolean parsing in multidimensional records"""
+        converter = SqliteConverter()
+        
+        # Mock array field info for BYTE array
+        array_info = ArrayFieldInfo(
+            base_name="TEST:BOOLPARAM",
+            element_type="BYTE",
+            element_size=1,
+            array_size=4,
+            start_offset=0,
+            element_offsets=[0, 1, 2, 3],
+            is_single_field_array=True
+        )
+        
+        # Mock analysis
+        analysis = {
+            'has_arrays': True,
+            'array_fields': [array_info],
+            'regular_fields': []
+        }
+        
+        # Mock record object with raw data (4 bytes: True, False, True, False)
+        mock_record = Mock()
+        mock_record.data = Mock()
+        mock_record.data.data = b'\x01\x00\x01\x00'
+        
+        # Mock table definition
+        mock_table_def = Mock()
+        mock_table_def.fields = []
+        mock_table_def.memos = []
+        
+        result = converter._convert_multidimensional_record_to_tuple(
+            mock_record, mock_table_def, analysis
+        )
+        
+        assert len(result) == 1
+        assert result[0] == json.dumps([True, False, True, False])
+    
+    def test_convert_multidimensional_record_to_tuple_numeric_arrays(self):
+        """Test numeric array parsing in multidimensional records"""
+        converter = SqliteConverter()
+        
+        # Mock array field info for DOUBLE array
+        array_info = ArrayFieldInfo(
+            base_name="TEST:REALPARAM",
+            element_type="DOUBLE",
+            element_size=8,
+            array_size=2,
+            start_offset=0,
+            element_offsets=[0, 8],
+            is_single_field_array=True
+        )
+        
+        # Mock analysis
+        analysis = {
+            'has_arrays': True,
+            'array_fields': [array_info],
+            'regular_fields': []
+        }
+        
+        # Mock record object with raw data (2 doubles: 1.0, 2.0)
+        mock_record = Mock()
+        mock_record.data = Mock()
+        mock_record.data.data = b'\x00\x00\x00\x00\x00\x00\xf0\x3f' + b'\x00\x00\x00\x00\x00\x00\x00\x40'
+        
+        # Mock table definition
+        mock_table_def = Mock()
+        mock_table_def.fields = []
+        mock_table_def.memos = []
+        
+        result = converter._convert_multidimensional_record_to_tuple(
+            mock_record, mock_table_def, analysis
+        )
+        
+        assert len(result) == 1
+        parsed_array = json.loads(result[0])
+        assert len(parsed_array) == 2
+        assert abs(parsed_array[0] - 1.0) < 0.0001
+        assert abs(parsed_array[1] - 2.0) < 0.0001
+    
+    def test_convert_multidimensional_record_to_tuple_string_arrays(self):
+        """Test string array parsing in multidimensional records"""
+        converter = SqliteConverter()
+        
+        # Mock array field info for STRING array
+        array_info = ArrayFieldInfo(
+            base_name="TEST:NAMES",
+            element_type="STRING",
+            element_size=10,
+            array_size=2,
+            start_offset=0,
+            element_offsets=[0, 10],
+            is_single_field_array=True
+        )
+        
+        # Mock analysis
+        analysis = {
+            'has_arrays': True,
+            'array_fields': [array_info],
+            'regular_fields': []
+        }
+        
+        # Mock record object with raw data (2 strings: "Hello", "World")
+        mock_record = Mock()
+        mock_record.data = Mock()
+        mock_record.data.data = b'Hello\x00\x00\x00\x00\x00' + b'World\x00\x00\x00\x00\x00'
+        
+        # Mock table definition
+        mock_table_def = Mock()
+        mock_table_def.fields = []
+        mock_table_def.memos = []
+        
+        result = converter._convert_multidimensional_record_to_tuple(
+            mock_record, mock_table_def, analysis
+        )
+        
+        assert len(result) == 1
+        assert result[0] == json.dumps(["Hello", "World"])
+    
+    def test_convert_multidimensional_record_to_tuple_insufficient_data(self):
+        """Test handling of insufficient data in multidimensional records"""
+        converter = SqliteConverter()
+        
+        # Mock array field info
+        array_info = ArrayFieldInfo(
+            base_name="TEST:BOOLPARAM",
+            element_type="BYTE",
+            element_size=1,
+            array_size=3,
+            start_offset=0,
+            element_offsets=[0, 1, 2],
+            is_single_field_array=True
+        )
+        
+        # Mock analysis
+        analysis = {
+            'has_arrays': True,
+            'array_fields': [array_info],
+            'regular_fields': []
+        }
+        
+        # Mock insufficient raw record data (only 2 bytes for 3-byte array)
+        # Mock record object with raw data (only 2 bytes for 3-byte array)
+        mock_record = Mock()
+        mock_record.data = Mock()
+        mock_record.data.data = b'\x01\x00'
+        
+        # Mock table definition
+        mock_table_def = Mock()
+        mock_table_def.fields = []
+        mock_table_def.memos = []
+        
+        result = converter._convert_multidimensional_record_to_tuple(
+            mock_record, mock_table_def, analysis
+        )
+        
+        assert len(result) == 1
+        # Should handle insufficient data gracefully
+        parsed_array = json.loads(result[0])
+        assert len(parsed_array) == 3  # All 3 elements, but last one is None due to insufficient data
+        assert parsed_array == [True, False, None]
+    
+    def test_convert_multidimensional_record_to_tuple_no_arrays(self):
+        """Test conversion when no arrays are present"""
+        converter = SqliteConverter()
+        
+        # Mock analysis with no arrays
+        analysis = {
+            'has_arrays': False,
+            'array_fields': [],
+            'regular_fields': []
+        }
+        
+        # Mock record object with raw data
+        mock_record = Mock()
+        mock_record.data = Mock()
+        mock_record.data.data = b'test data'
+        
+        # Mock table definition
+        mock_table_def = Mock()
+        mock_table_def.fields = []
+        mock_table_def.memos = []
+        
+        result = converter._convert_multidimensional_record_to_tuple(
+            mock_record, mock_table_def, analysis
+        )
+        
+        assert result == ()  # Returns empty tuple when no arrays or regular fields
+    
+    def test_convert_multidimensional_record_to_tuple_regular_field_boolean(self):
+        """Test boolean parsing for regular fields in multidimensional records"""
+        converter = SqliteConverter()
+        
+        # Mock regular field
+        regular_field = Mock()
+        regular_field.name = "TEST:FLAG"
+        regular_field.type = "BYTE"
+        regular_field.offset = 0
+        regular_field.size = 1
+        
+        # Mock analysis
+        analysis = {
+            'has_arrays': False,
+            'array_fields': [],
+            'regular_fields': [regular_field]
+        }
+        
+        # Mock record object with raw data (1 byte: True)
+        mock_record = Mock()
+        mock_record.data = Mock()
+        mock_record.data.data = b'\x01'
+        
+        # Mock table definition
+        mock_table_def = Mock()
+        mock_table_def.fields = []
+        mock_table_def.memos = []
+        
+        result = converter._convert_multidimensional_record_to_tuple(
+            mock_record, mock_table_def, analysis
+        )
+        
+        assert len(result) == 1
+        assert result[0] is True  # Should be converted to boolean
+    
+    def test_convert_multidimensional_record_to_tuple_regular_field_string(self):
+        """Test string parsing for regular fields in multidimensional records"""
+        converter = SqliteConverter()
+        
+        # Mock regular field
+        regular_field = Mock()
+        regular_field.name = "TEST:NAME"
+        regular_field.type = "STRING"
+        regular_field.offset = 0
+        regular_field.size = 10
+        
+        # Mock analysis
+        analysis = {
+            'has_arrays': False,
+            'array_fields': [],
+            'regular_fields': [regular_field]
+        }
+        
+        # Mock record object with raw data (string with null terminator)
+        mock_record = Mock()
+        mock_record.data = Mock()
+        mock_record.data.data = b'Hello\x00\x00\x00\x00\x00'
+        
+        # Mock table definition
+        mock_table_def = Mock()
+        mock_table_def.fields = []
+        mock_table_def.memos = []
+        
+        result = converter._convert_multidimensional_record_to_tuple(
+            mock_record, mock_table_def, analysis
+        )
+        
+        assert len(result) == 1
+        assert result[0] == "Hello"  # Should be converted to string with null stripping
