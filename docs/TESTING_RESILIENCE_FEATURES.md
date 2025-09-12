@@ -285,7 +285,7 @@ Tests generate comprehensive reports:
 # Run with debug output
 pytest tests/unit/ -v -s --tb=long
 
-# Run specific failing test
+# Run specific test
 pytest tests/unit/test_resilience_enhancer.py::TestResilienceEnhancer::test_memory_usage -v -s
 
 # Run with pdb debugger

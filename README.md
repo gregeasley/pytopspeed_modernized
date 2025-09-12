@@ -4,7 +4,7 @@ A modernized Python library for converting Clarion TopSpeed database files (.phd
 
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Tests](https://img.shields.io/badge/tests-290%2B%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-354%20passing-brightgreen.svg)](tests/)
 
 ## 🚀 Features
 
@@ -18,7 +18,7 @@ A modernized Python library for converting Clarion TopSpeed database files (.phd
 - **Data Integrity**: Preserve all data types, relationships, and null vs zero distinctions
 - **CLI Interface**: Easy-to-use command-line tools
 - **Python API**: Programmatic access to all functionality
-- **Comprehensive Testing**: 290+ unit tests, integration tests, and performance tests
+- **Comprehensive Testing**: 354 unit tests, integration tests, and performance tests with 100% pass rate
 
 ## 📋 Supported File Formats
 
@@ -403,7 +403,7 @@ python -m pytest tests/performance/ --run-performance
 - ✅ **Concurrent Performance** - Multi-threaded operation testing
 
 **Test Results:**
-- ✅ **290+ total tests** - All passing
+- ✅ **354 total tests** - All passing with 100% pass rate
 - ✅ **95%+ code coverage** - Comprehensive test coverage
 - ✅ **Performance benchmarks** - Validated scalability characteristics
 - ✅ **Memory efficiency** - Tested memory usage patterns

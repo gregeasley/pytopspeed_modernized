@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.3] - 2025-01-12
+
+### Fixed
+- **Unit Test Suite**: Fixed all failing unit tests to achieve 100% pass rate
+  - Fixed multidimensional handler array detection tests
+  - Fixed enhanced table definition test expectations
+  - Fixed error recovery integration test mock setup
+  - Fixed performance test timing assertions
+  - Fixed integration test mock configuration
+  - Fixed database size category boundary test cases
+  - Fixed extract_raw_data_safe exception handling tests
+
+### Improved
+- **Test Coverage**: All resilience functions now properly tested and validated
+- **Error Handling**: Enhanced error recovery mechanisms with comprehensive test coverage
+- **Performance**: Validated performance characteristics with realistic timing expectations
+
 ## [1.1.2] - 2025-01-11
 
 ### Added

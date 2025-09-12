@@ -111,9 +111,9 @@ class ResilienceEnhancer:
         """
         try:
             # Try multiple extraction methods in order of preference
-            if hasattr(record.data.data, 'data'):
+            if hasattr(record, 'data') and hasattr(record.data, 'data') and hasattr(record.data.data, 'data'):
                 return record.data.data.data
-            elif hasattr(record.data, 'data'):
+            elif hasattr(record, 'data') and hasattr(record.data, 'data'):
                 return record.data.data
             elif hasattr(record, 'data'):
                 return record.data

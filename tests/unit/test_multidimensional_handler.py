@@ -215,6 +215,7 @@ class TestTableStructureAnalysis:
         field1.size = 2
         field1.offset = 0
         field1.array_element_count = 1
+        field1.is_enhanced_field = False  # Explicitly set to False for test
         mock_fields.append(field1)
         
         # Single-field array
@@ -225,6 +226,7 @@ class TestTableStructureAnalysis:
         field2.offset = 2
         field2.array_element_count = 10
         field2.array_element_size = None
+        field2.is_enhanced_field = False  # Explicitly set to False for test
         mock_fields.append(field2)
         
         # Another regular field
@@ -234,6 +236,7 @@ class TestTableStructureAnalysis:
         field3.size = 2
         field3.offset = 12
         field3.array_element_count = 1
+        field3.is_enhanced_field = False  # Explicitly set to False for test
         mock_fields.append(field3)
         
         mock_table_def.fields = mock_fields
@@ -269,6 +272,7 @@ class TestTableStructureAnalysis:
         field1.size = 2
         field1.offset = 0
         field1.array_element_count = 1
+        field1.is_enhanced_field = False  # Explicitly set to False for test
         mock_fields.append(field1)
         
         # Multi-field array (PROD1, PROD2, PROD3, PROD4, PROD5)
@@ -279,6 +283,7 @@ class TestTableStructureAnalysis:
             field.size = 8
             field.offset = 2 + i * 8
             field.array_element_count = 1
+            field.is_enhanced_field = False  # Explicitly set to False for test
             mock_fields.append(field)
         
         # Another regular field
@@ -288,6 +293,7 @@ class TestTableStructureAnalysis:
         field7.size = 2
         field7.offset = 42
         field7.array_element_count = 1
+        field7.is_enhanced_field = False  # Explicitly set to False for test
         mock_fields.append(field7)
         
         mock_table_def.fields = mock_fields

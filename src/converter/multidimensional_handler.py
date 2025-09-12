@@ -39,6 +39,11 @@ class MultidimensionalHandler:
         # Group fields by base name to identify arrays
         field_groups = {}
         for field in table_def.fields:
+            # Skip grouping for enhanced fields - they should remain individual
+            if hasattr(field, 'is_enhanced_field') and field.is_enhanced_field:
+                analysis['regular_fields'].append(field)
+                continue
+                
             field_size = getattr(field, 'size', 8)
             base_name = self._get_base_field_name(field.name, field_size)
             if base_name not in field_groups:

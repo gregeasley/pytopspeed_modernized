@@ -33,7 +33,7 @@ def read_requirements():
 
 setup(
     name="pytopspeed-modernized",
-    version="1.1.2",
+    version="1.1.3",
     author="Greg Easley",
     author_email="greg@easley.dev",
     description="Modernized pytopspeed library for converting TopSpeed database files to SQLite",
