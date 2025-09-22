@@ -340,7 +340,7 @@ class SqliteConverter:
                     
                     try:
                         table_structure = self.schema_mapper.multidimensional_handler.analyze_table_structure(table_def)
-                        print(f"DEBUG: Table {table.name} analysis: {table_structure}")
+                        # Table analysis completed
                     except Exception as e:
                         self.logger.warning(f"Skipping table {table.name}: Error analyzing table structure: {e}")
                         continue
@@ -396,13 +396,27 @@ class SqliteConverter:
                 self.logger.warning(f"Skipping data migration for {table_name}: No table definition")
                 return 0
             
-            # Check if this is an enhanced table definition (created due to parsing failure)
-            # Use enhanced data migration for tables that failed to parse normally
-            if hasattr(table_def, 'field_count') and table_def.field_count is not None and table_def.field_count > 30:
-                return self._migrate_enhanced_table_data(tps, table_name, sanitized_table_name, conn, table_def)
+            # Check if this is a multidimensional table (early detection)
+            is_multidimensional = False
+            if hasattr(table_def, 'is_multidimensional_table'):
+                is_multidimensional = table_def.is_multidimensional_table
+            else:
+                # Check table structure for multidimensional indicators
+                table = None
+                for num, t in tps.tables._TpsTablesList__tables.items():
+                    if t.name == table_name:
+                        table = t
+                        break
+                
+                if table and hasattr(table, 'definition_bytes') and isinstance(table.definition_bytes, dict) and len(table.definition_bytes) > 1:
+                    is_multidimensional = True
             
-            # Analyze table structure for multi-dimensional fields
-            analysis = self.schema_mapper.multidimensional_handler.analyze_table_structure(table_def)
+            if is_multidimensional:
+                # Use specialized multidimensional data migration
+                return self._migrate_multidimensional_table_data(tps, table_name, sanitized_table_name, conn, table_def)
+            else:
+                # Use fast path for regular tables, but check for arrays
+                analysis = self._analyze_regular_table_for_arrays(table_def)
             
             # Get field names for INSERT statement
             field_names = []
@@ -532,6 +546,189 @@ class SqliteConverter:
             conn.rollback()
             return 0
     
+    def _migrate_multidimensional_table_data(self, tps: TPS, table_name: str, sanitized_table_name: str, 
+                                           conn: sqlite3.Connection, table_def) -> int:
+        """
+        Migrate data for multidimensional tables using specialized record parsing
+        
+        Args:
+            tps: TopSpeed file object
+            table_name: Original table name
+            sanitized_table_name: Sanitized table name
+            conn: SQLite connection
+            table_def: Enhanced table definition with field metadata
+            
+        Returns:
+            Number of records migrated
+        """
+        cursor = conn.cursor()
+        
+        try:
+            # Get field names for INSERT statement
+            field_names = []
+            for field in table_def.fields:
+                sanitized_field_name = self.schema_mapper.sanitize_field_name(field.name)
+                field_names.append(sanitized_field_name)
+            
+            # Create INSERT statement
+            placeholders = ', '.join(['?' for _ in field_names])
+            insert_sql = f"INSERT INTO {sanitized_table_name} ({', '.join(field_names)}) VALUES ({placeholders})"
+            
+            # Get table number for raw record access
+            table_number = None
+            for num, table in tps.tables._TpsTablesList__tables.items():
+                if table.name == table_name:
+                    table_number = num
+                    break
+            
+            if table_number is None:
+                self.logger.error(f"Could not find table number for {table_name}")
+                return 0
+            
+            # Process records in batches
+            batch = []
+            record_count = 0
+            
+            # Access raw records directly using TpsRecordsList
+            from pytopspeed.tpsrecord import TpsRecordsList
+            
+            for page_ref in tps.pages.list():
+                if tps.pages[page_ref].hierarchy_level == 0:
+                    for record in TpsRecordsList(tps, tps.pages[page_ref], encoding='cp1251', check=True):
+                        if record.type == 'DATA' and record.data.table_number == table_number:
+                            try:
+                                # Parse raw record data using field definitions
+                                record_tuple = self._parse_multidimensional_record_data(record, table_def)
+                                if record_tuple:
+                                    batch.append(record_tuple)
+                                    
+                                    # Insert batch when it reaches batch_size
+                                    if len(batch) >= self.batch_size:
+                                        cursor.executemany(insert_sql, batch)
+                                        record_count += len(batch)
+                                        self._update_progress(record_count, 0, f"Migrated {record_count} records from {table_name}")
+                                        batch = []
+                                        
+                            except Exception as e:
+                                self.logger.warning(f"Error processing record in {table_name}: {e}")
+                                continue
+            
+            # Insert remaining records
+            if batch:
+                cursor.executemany(insert_sql, batch)
+                record_count += len(batch)
+                self._update_progress(record_count, 0, f"Migrated {record_count} records from {table_name}")
+            
+            conn.commit()
+            return record_count
+            
+        except Exception as e:
+            self.logger.error(f"Error migrating data for table {table_name}: {e}")
+            conn.rollback()
+            return 0
+    
+    def _parse_multidimensional_record_data(self, record, table_def) -> Tuple:
+        """
+        Parse raw record data for multidimensional tables
+        
+        Args:
+            record: TopSpeed record object
+            table_def: Enhanced table definition with field metadata
+            
+        Returns:
+            Tuple of parsed field values
+        """
+        try:
+            # Extract raw data from record
+            raw_data = record.data.data
+            
+            # Handle Container objects
+            if hasattr(raw_data, 'data'):
+                raw_data = raw_data.data
+            
+            if not isinstance(raw_data, bytes):
+                self.logger.warning(f"Expected bytes data, got {type(raw_data)}")
+                return None
+            
+            # For multidimensional tables, use the actual field definitions with mixed sizes and arrays
+            values = []
+            import struct
+            import json
+            
+            # Parse each field using the correct type and offset
+            for field in table_def.fields:
+                try:
+                    if hasattr(field, 'is_array_field') and field.is_array_field:
+                        # Handle array fields - create JSON array
+                        array_values = []
+                        current_offset = field.offset
+                        
+                        # Get array element count from array_info
+                        element_count = field.array_info['element_count']
+                        
+                        # Get the element size and type from the field definition
+                        if hasattr(field, 'original_field_def') and field.original_field_def:
+                            # Enhanced table definition (multidimensional tables)
+                            element_size = field.original_field_def.size // field.original_field_def.array_element_count if field.original_field_def.array_element_count > 0 else 4
+                            element_type = field.original_field_def.type
+                        else:
+                            # Regular table definition - use field properties
+                            element_size = field.size // field.array_element_count if field.array_element_count > 0 else 4
+                            element_type = field.type
+                        
+                        for i in range(element_count):
+                            if current_offset + element_size - 1 < len(raw_data):
+                                # Parse array element based on actual field type
+                                if element_type == 'LONG':
+                                    value = struct.unpack('<i', raw_data[current_offset:current_offset+4])[0]
+                                elif element_type == 'DOUBLE':
+                                    value = struct.unpack('<d', raw_data[current_offset:current_offset+8])[0]
+                                elif element_type == 'SHORT':
+                                    value = struct.unpack('<h', raw_data[current_offset:current_offset+2])[0]
+                                elif element_type == 'BYTE':
+                                    value = raw_data[current_offset]
+                                else:
+                                    # Default to LONG for unknown types
+                                    value = struct.unpack('<i', raw_data[current_offset:current_offset+4])[0]
+                                
+                                array_values.append(value)
+                                current_offset += element_size
+                            else:
+                                array_values.append(None)
+
+                        # Store as JSON string
+                        json_value = json.dumps(array_values)
+                        values.append(json_value)
+                    else:
+                        # Handle regular fields
+                        offset = field.offset
+                        field_type = field.type
+                        field_size = field.size
+                        
+                        if offset + field_size - 1 < len(raw_data):
+                            if field_type == 'SHORT':
+                                value = struct.unpack('<h', raw_data[offset:offset+2])[0]
+                            elif field_type == 'BYTE':
+                                value = raw_data[offset]
+                            elif field_type == 'LONG':
+                                value = struct.unpack('<i', raw_data[offset:offset+4])[0]
+                            else:
+                                # Default to SHORT
+                                value = struct.unpack('<h', raw_data[offset:offset+2])[0]
+                            
+                            values.append(value)
+                        else:
+                            values.append(None)
+                except Exception as e:
+                    self.logger.warning(f"Error parsing field {field.name} ({field_type}) at offset {offset}: {e}")
+                    values.append(None)
+            
+            return tuple(values)
+            
+        except Exception as e:
+            self.logger.warning(f"Error parsing multidimensional record data: {e}")
+            return None
+    
     def _migrate_enhanced_table_data(self, tps, table_name: str, sanitized_table_name: str, 
                                    conn: sqlite3.Connection, table_def) -> int:
         """
@@ -596,7 +793,7 @@ class SqliteConverter:
                                 columns = cursor.fetchall()
                                 actual_column_count = len(columns)
                                 
-                                print(f"DEBUG: Table {sanitized_table_name} has {actual_column_count} columns, table_def has {table_def.field_count} fields")
+                                # Column count verified
                                 
                                 # Parse the raw data using the actual field definitions
                                 field_values = []
@@ -631,17 +828,11 @@ class SqliteConverter:
                                 # Insert into table
                                 if field_values:  # Only insert if we have values
                                     placeholders = ','.join(['?' for _ in field_values])
-                                    print(f"DEBUG: Inserting into {sanitized_table_name} with {len(field_values)} values")
-                                    print(f"DEBUG: Field values: {field_values[:5]}...")  # Show first 5 values
                                     
                                     # Ensure we have the right number of values
                                     if len(field_values) == actual_column_count:
                                         cursor.execute(f"INSERT INTO {sanitized_table_name} VALUES ({placeholders})", field_values)
                                         record_count += 1
-                                    else:
-                                        print(f"DEBUG: Skipping insert - field count mismatch: {len(field_values)} vs {actual_column_count}")
-                                else:
-                                    print(f"DEBUG: Skipping insert - no field values")
                                 
                             except Exception as e:
                                 self.logger.warning(f"Error processing record in enhanced table {table_name}: {e}")
@@ -737,59 +928,36 @@ class SqliteConverter:
             # Try normal table definition parsing
             return tps.tables.get_definition(table_number)
         except Exception as e:
-            # If parsing fails, try to create a more sophisticated table definition
+            # If parsing fails, check if this is a multidimensional table
             self.logger.warning(f"Failed to parse table definition for {table_name}: {e}")
-            self.logger.info(f"Attempting to create enhanced table definition for {table_name}")
             
-            # Try to extract information from raw definition bytes
-            try:
-                table = tps.tables._TpsTablesList__tables[table_number]
+            # Check if this table has multiple definition portions (multidimensional indicator)
+            table = tps.tables._TpsTablesList__tables[table_number]
+            if hasattr(table, 'definition_bytes') and isinstance(table.definition_bytes, dict) and len(table.definition_bytes) > 1:
+                # This is a multidimensional table - use specialized parsing
+                self.logger.info(f"Detected multidimensional table {table_name} with {len(table.definition_bytes)} portions")
+                return self._create_multidimensional_table_definition(table_name, table.definition_bytes)
+            else:
+                # Regular table with parsing issues - try enhanced parsing
+                self.logger.info(f"Attempting enhanced table definition for {table_name}")
                 if hasattr(table, 'definition_bytes'):
-                    # Debug: Print raw definition bytes info
-                    print(f"DEBUG: Raw definition bytes for {table_name}:")
-                    print(f"  Number of portions: {len(table.definition_bytes)}")
-                    for portion_num, portion_bytes in table.definition_bytes.items():
-                        print(f"  Portion {portion_num}: {len(portion_bytes)} bytes")
-                        print(f"  First 100 bytes: {portion_bytes[:100].hex()}")
+                    return self._create_enhanced_table_definition(table_name, table.definition_bytes)
+                else:
+                    # Fall back to minimal table definition
+                    self.logger.info(f"Creating minimal table definition for {table_name}")
                     
-                    # For multidimensional tables, try to parse each portion separately
-                    if len(table.definition_bytes) > 1:
-                        print(f"DEBUG: Detected multidimensional table with {len(table.definition_bytes)} portions")
-                        # Use enhanced table definition with combined bytes for multidimensional tables
-                        combined_bytes = b''
-                        for key in sorted(table.definition_bytes.keys()):
-                            combined_bytes += table.definition_bytes[key]
-                        enhanced_def = self._create_enhanced_table_definition(table_name, {0: combined_bytes})
-                    else:
-                        # Single portion - use standard enhanced parsing
-                        enhanced_def = self._create_enhanced_table_definition(table_name, table.definition_bytes)
+                    class MinimalTableDef:
+                        def __init__(self, name):
+                            self.name = name
+                            self.fields = []
+                            self.memos = []
+                            self.indexes = []
+                            self.record_size = 0
+                            self.field_count = 0
+                            self.memo_count = 0
+                            self.index_count = 0
                     
-                    if enhanced_def:
-                        self.logger.info(f"Created enhanced table definition for {table_name}")
-                        print(f"DEBUG: Enhanced table definition created for {table_name} with {len(enhanced_def.fields)} fields")
-                        print(f"DEBUG: Field names: {[f.name for f in enhanced_def.fields[:5]]}...")  # Show first 5 field names
-                        return enhanced_def
-                    else:
-                        print(f"DEBUG: Enhanced table definition creation failed for {table_name}")
-            except Exception as enhanced_error:
-                self.logger.warning(f"Enhanced parsing also failed for {table_name}: {enhanced_error}")
-            
-            # Fall back to minimal table definition
-            self.logger.info(f"Creating minimal table definition for {table_name}")
-            
-            # Create a minimal table definition that can be processed
-            class MinimalTableDef:
-                def __init__(self, name):
-                    self.name = name
-                    self.fields = []
-                    self.memos = []
-                    self.indexes = []
-                    self.record_size = 0
-                    self.field_count = 0
-                    self.memo_count = 0
-                    self.index_count = 0
-            
-            return MinimalTableDef(table_name)
+                    return MinimalTableDef(table_name)
     
     def _migrate_large_array_table_data(self, tps, table_name: str, sanitized_table_name: str, 
                                       conn: sqlite3.Connection, table_def) -> int:
@@ -963,6 +1131,7 @@ class SqliteConverter:
                     self.field_count = field_count
                     self.memo_count = memo_count
                     self.index_count = index_count
+                    self.is_enhanced_table = True  # Mark as enhanced table
                     
                     # Create field definitions with actual names if possible, otherwise use generic names
                     limited_field_count = field_count  # Use the actual field count, not limited to 26
@@ -973,7 +1142,7 @@ class SqliteConverter:
                         # Field type structure (from pytopspeed)
                         FIELD_TYPE_STRUCT = Enum(Byte,
                             BYTE=1, SHORT=2, DATE=3, TIME=4, LONG=5, STRING=6, DECIMAL=7, MEMO=8, BLOB=9,
-                            CSTRING=10, PSTRING=11, PICTURE=12, DOUBLE=9, _default_='STRING'
+                            CSTRING=10, PSTRING=11, PICTURE=12, DOUBLE=13, DOUBLE_79=79, _default_='STRING'
                         )
                         
                         # Table definition field structure (from pytopspeed)
@@ -989,6 +1158,8 @@ class SqliteConverter:
                             "template" / If(lambda x: x['type'] in ['STRING', 'CSTRING', 'PSTRING', 'PICTURE'], Int16ul),
                             "decimal_count" / If(lambda x: x['type'] == 'DECIMAL', Byte),
                             "decimal_size" / If(lambda x: x['type'] == 'DECIMAL', Byte),
+                            "double_79_extra1" / If(lambda x: x['type'] == 'DOUBLE_79', Int16ul),
+                            "double_79_extra2" / If(lambda x: x['type'] == 'DOUBLE_79', Int16ul),
                         )
                         
                         # Try to parse individual field definitions
@@ -1011,9 +1182,10 @@ class SqliteConverter:
                                 if sanitized_name == "FIELD_UNKNOWN" or len(sanitized_name.strip()) == 0:
                                     sanitized_name = f"FIELD_{i+1}"
                                 
-                                # Debug: log field name extraction with array info
-                                array_info = f" (ARRAY: {field_def.array_element_count} elements)" if field_def.array_element_count > 1 else ""
-                                print(f"Field {i}: '{field_name}' -> '{sanitized_name}' (type: {field_def.type}, size: {field_def.size}, offset: {field_def.offset}){array_info}")
+                                # Log field name extraction with array info (only for first few fields to avoid performance impact)
+                                if i < 5:  # Only log first 5 fields
+                                    array_info = f" (ARRAY: {field_def.array_element_count} elements)" if field_def.array_element_count > 1 else ""
+                                    print(f"Field {i}: '{field_name}' -> '{sanitized_name}' (type: {field_def.type}, size: {field_def.size}, offset: {field_def.offset}){array_info}")
                                 
                                 field = type('Field', (), {
                                     'name': sanitized_name,
@@ -1022,6 +1194,8 @@ class SqliteConverter:
                                     'offset': field_def.offset,
                                     'array_element_count': field_def.array_element_count,
                                     'array_element_size': getattr(field_def, 'array_element_size', None),
+                                    'double_79_extra1': getattr(field_def, 'double_79_extra1', None),
+                                    'double_79_extra2': getattr(field_def, 'double_79_extra2', None),
                                     'is_enhanced_field': True  # Mark as enhanced field to prevent grouping
                                 })()
                                 self.fields.append(field)
@@ -1043,8 +1217,9 @@ class SqliteConverter:
                                 if sanitized_name == "FIELD_UNKNOWN" or len(sanitized_name.strip()) == 0:
                                     sanitized_name = f"FIELD_{i+1}"
                                 
-                                # Debug: log field name extraction
-                                print(f"Field {i}: '{field_name}' -> '{sanitized_name}' (fallback: DOUBLE, size: 8, offset: {i * 8})")
+                                # Log field name extraction (only for first few fields to avoid performance impact)
+                                if i < 5:  # Only log first 5 fields
+                                    print(f"Field {i}: '{field_name}' -> '{sanitized_name}' (fallback: DOUBLE, size: 8, offset: {i * 8})")
                                 
                                 field = type('Field', (), {
                                     'name': sanitized_name,
@@ -1053,6 +1228,8 @@ class SqliteConverter:
                                     'offset': i * 8,   # Estimated offset
                                     'array_element_count': 1,
                                     'array_element_size': 8,
+                                    'double_79_extra1': None,
+                                    'double_79_extra2': None,
                                     'is_enhanced_field': True
                                 })()
                                 self.fields.append(field)
@@ -1077,8 +1254,9 @@ class SqliteConverter:
                             if sanitized_name == "FIELD_UNKNOWN" or len(sanitized_name.strip()) == 0:
                                 sanitized_name = f"FIELD_{i+1}"
                             
-                            # Debug: log field name extraction
-                            print(f"Field {i}: '{field_name}' -> '{sanitized_name}' (fallback: DOUBLE, size: 8, offset: {i * 8})")
+                            # Log field name extraction (only for first few fields to avoid performance impact)
+                            if i < 5:  # Only log first 5 fields
+                                print(f"Field {i}: '{field_name}' -> '{sanitized_name}' (fallback: DOUBLE, size: 8, offset: {i * 8})")
                             
                             field = type('Field', (), {
                                 'name': sanitized_name,
@@ -1087,6 +1265,8 @@ class SqliteConverter:
                                 'offset': i * 8,   # Estimate offset
                                 'array_element_count': 1,  # Not an array - want individual columns
                                 'array_element_size': 8,   # Element size
+                                'double_79_extra1': None,
+                                'double_79_extra2': None,
                                 'is_enhanced_field': True  # Mark as enhanced field to prevent grouping
                             })()
                             self.fields.append(field)
@@ -1145,7 +1325,7 @@ class SqliteConverter:
     
     def _create_multidimensional_table_definition(self, table_name, definition_bytes):
         """
-        Create an enhanced table definition for multidimensional tables with multiple definition portions
+        Create enhanced table definition for multidimensional tables using actual field definitions from TopSpeed file
         
         Args:
             table_name: Name of the table
@@ -1155,67 +1335,398 @@ class SqliteConverter:
             Enhanced table definition or None if analysis fails
         """
         try:
-            print(f"DEBUG: Starting multidimensional table definition for {table_name}")
-            print(f"DEBUG: Number of portions: {len(definition_bytes)}")
+            # Parse the actual table definition using TopSpeed structure
+            from pytopspeed.tpstable import TABLE_DEFINITION_STRUCT
             
-            # For now, use the enhanced table definition approach but with better field extraction
-            # This is a simplified version that should work
+            # Combine all definition bytes
             combined_bytes = b''
-            for key in sorted(definition_bytes.keys()):
-                combined_bytes += definition_bytes[key]
+            for portion in sorted(definition_bytes.keys()):
+                combined_bytes += definition_bytes[portion]
             
-            # Try to extract basic information from the header
-            if len(combined_bytes) < 10:
+            # Parse the table definition
+            table_def_parsed = TABLE_DEFINITION_STRUCT.parse(combined_bytes)
+            
+            # Extract field names using the resilient parser for array grouping
+            field_names = self._extract_field_names_from_bytes(combined_bytes, table_def_parsed.field_count)
+            if not field_names:
+                self.logger.warning(f"Could not extract field names for {table_name}")
                 return None
             
-            # Parse the header (first 10 bytes)
-            import struct
-            min_version_driver = struct.unpack('<H', combined_bytes[0:2])[0]
-            record_size = struct.unpack('<H', combined_bytes[2:4])[0]
-            field_count = struct.unpack('<H', combined_bytes[4:6])[0]
-            memo_count = struct.unpack('<H', combined_bytes[6:8])[0]
-            index_count = struct.unpack('<H', combined_bytes[8:10])[0]
+            # Use actual field definitions to identify arrays
+            array_groups = {}
+            regular_fields = []
             
-            print(f"DEBUG: Multidimensional parsing for {table_name}: {field_count} fields, {memo_count} memos, {index_count} indexes, record_size={record_size}")
+            for field_def in table_def_parsed.fields:
+                clean_name = field_def.name.split(':', 1)[-1] if ':' in field_def.name else field_def.name
+                
+                if field_def.array_element_count > 1:
+                    # This is an array field
+                    array_groups[clean_name] = {
+                        'field_def': field_def,
+                        'element_count': field_def.array_element_count,
+                        'base_name': clean_name
+                    }
+                    self.logger.info(f"Identified array field: {clean_name} with {field_def.array_element_count} elements")
+                else:
+                    # This is a regular field
+                    regular_fields.append(clean_name)
             
-            # Try to extract actual field names from the raw definition bytes
-            actual_fields = self._extract_field_names_from_bytes(combined_bytes, field_count)
-            
-            # Create enhanced table definition
             class EnhancedTableDef:
-                def __init__(self, name, field_names, sanitize_func):
+                def __init__(self, name, table_def_parsed, array_groups, regular_fields, sanitize_func):
+                    self.is_enhanced_table = True  # Mark as enhanced table
+                    self.is_multidimensional_table = True  # Mark as multidimensional table
                     self.name = name
                     self.fields = []
-                    self.memo_count = memo_count
-                    self.index_count = index_count
-                    self.record_size = record_size
+                    self.memos = table_def_parsed.memos
+                    self.indexes = table_def_parsed.indexes
+                    self.memo_count = len(table_def_parsed.memos)
+                    self.index_count = len(table_def_parsed.indexes)
+                    self.record_size = table_def_parsed.record_size
                     
-                    for i, field_name in enumerate(field_names):
-                        # Sanitize field name for SQL
-                        sanitized_name = sanitize_func(field_name)
+                    # Create field definitions using actual TopSpeed field definitions
+                    for field_def in table_def_parsed.fields:
+                        # Check if this field is part of an array group
+                        is_array_field = False
+                        array_info = None
                         
-                        # Ensure unique field names
-                        if sanitized_name == "FIELD_UNKNOWN" or len(sanitized_name.strip()) == 0:
-                            sanitized_name = f"FIELD_{i+1}"
+                        # Remove the table prefix (e.g., "FOR:") from field name
+                        clean_field_name = field_def.name
+                        if ':' in clean_field_name:
+                            clean_field_name = clean_field_name.split(':', 1)[1]
                         
-                        field = type('Field', (), {
-                            'name': sanitized_name,
-                            'type': 'DOUBLE',  # Default type for now
-                            'size': 8,         # Default size
-                            'offset': i * 8,   # Estimated offset
-                            'array_element_count': 1,
-                            'array_element_size': None,
-                            'is_enhanced_field': True  # Mark as enhanced field to prevent grouping
-                        })()
+                        # Check if this field is part of an array group
+                        for array_name, array_data in array_groups.items():
+                            if clean_field_name == array_name:
+                                is_array_field = True
+                                array_info = array_data
+                                break
+                        
+                        if is_array_field:
+                            # Create JSON array field
+                            field = type('Field', (), {
+                                'name': sanitize_func(clean_field_name),
+                                'type': 'JSON',  # Store as JSON
+                                'size': 0,  # Variable size
+                                'offset': field_def.offset,
+                                'array_element_count': field_def.array_element_count,
+                                'array_element_size': field_def.size // field_def.array_element_count if field_def.array_element_count > 0 else 0,
+                                'double_79_extra1': None,
+                                'double_79_extra2': None,
+                                'is_enhanced_field': True,
+                                'is_array_field': True,
+                                'array_info': array_info,  # Store the array info
+                                'original_field_def': field_def  # Store original field definition
+                            })()
+                        else:
+                            # Create regular field
+                            field = type('Field', (), {
+                                'name': sanitize_func(clean_field_name),
+                                'type': field_def.type,
+                                'size': field_def.size,
+                                'offset': field_def.offset,
+                                'array_element_count': field_def.array_element_count,
+                                'array_element_size': None,
+                                'double_79_extra1': None,
+                                'double_79_extra2': None,
+                                'is_enhanced_field': True,
+                                'is_array_field': False,
+                                'original_field_def': field_def  # Store original field definition
+                            })()
+                        
                         self.fields.append(field)
             
-            return EnhancedTableDef(table_name, actual_fields, self._sanitize_field_name_for_sql)
+            return EnhancedTableDef(table_name, table_def_parsed, array_groups, regular_fields, self._sanitize_field_name_for_sql)
             
         except Exception as e:
-            print(f"DEBUG: Multidimensional table definition creation failed: {e}")
-            import traceback
-            traceback.print_exc()
+            self.logger.warning(f"Multidimensional table definition creation failed for {table_name}: {e}")
             return None
+    
+    # REMOVED: _analyze_array_structure_from_names method - was hardcoded to FORCAST.csv
+    # Now using actual TopSpeed field definitions to identify arrays
+    
+    def _parse_field_definitions_from_bytes(self, definition_bytes: bytes, field_count: int) -> List[Dict]:
+        """
+        Parse actual field definitions from raw definition bytes using TopSpeed structure
+        
+        Args:
+            definition_bytes: Raw table definition bytes
+            field_count: Number of fields to parse
+            
+        Returns:
+            List of field definition dictionaries
+        """
+        parsed_fields = []
+        
+        # First, extract field names using the working method
+        field_names = self._extract_field_names_from_bytes(definition_bytes, field_count)
+        
+        # Then try to parse field definitions with proper types
+        offset = 10  # Skip header (first 10 bytes)
+        
+        try:
+            for i in range(field_count):
+                if i >= len(field_names):
+                    break
+                
+                field_name = field_names[i]
+                field_type = 'DOUBLE'  # Default
+                field_size = 8  # Default
+                field_offset = i * 8  # Estimated offset
+                array_element_count = 1
+                array_element_size = None
+                double_79_extra1 = None
+                double_79_extra2 = None
+                
+                # Try to parse using the TopSpeed field structure
+                if offset + 32 <= len(definition_bytes):
+                    try:
+                        field_def = TABLE_DEFINITION_FIELD_STRUCT.parse(definition_bytes[offset:])
+                        
+                        # Use parsed values if available
+                        field_type = str(field_def.type)
+                        field_size = field_def.size
+                        field_offset = field_def.offset
+                        array_element_count = field_def.array_element_count
+                        array_element_size = getattr(field_def, 'array_element_size', None)
+                        double_79_extra1 = getattr(field_def, 'double_79_extra1', None)
+                        double_79_extra2 = getattr(field_def, 'double_79_extra2', None)
+                        
+                        offset += 32  # Move to next field
+                        
+                    except Exception:
+                        # If structured parsing fails, try to extract type from raw bytes
+                        if offset < len(definition_bytes):
+                            type_byte = definition_bytes[offset]
+                            if type_byte == 1:
+                                field_type = 'BYTE'
+                                field_size = 1
+                            elif type_byte == 2:
+                                field_type = 'SHORT'
+                                field_size = 2
+                            elif type_byte == 5:
+                                field_type = 'LONG'
+                                field_size = 4
+                            elif type_byte == 13:
+                                field_type = 'DOUBLE'
+                                field_size = 8
+                            elif type_byte == 79:
+                                field_type = 'DOUBLE_79'
+                                field_size = 8
+                                # Try to read extra fields for type 79
+                                if offset + 4 < len(definition_bytes):
+                                    import struct
+                                    double_79_extra1 = struct.unpack('<H', definition_bytes[offset+2:offset+4])[0]
+                                if offset + 6 < len(definition_bytes):
+                                    double_79_extra2 = struct.unpack('<H', definition_bytes[offset+4:offset+6])[0]
+                        
+                        offset += 32  # Move to next field
+                
+                # For type 79 fields, determine the actual data type
+                if field_type == 'DOUBLE_79':
+                    # Create a mock field object to determine actual type
+                    mock_field = type('MockField', (), {
+                        'double_79_extra1': double_79_extra1,
+                        'double_79_extra2': double_79_extra2
+                    })()
+                    actual_type = self.schema_mapper.multidimensional_handler._get_actual_data_type_for_type79(mock_field)
+                    field_type = actual_type
+                
+                # Create field definition dictionary
+                field_info = {
+                    'name': field_name,
+                    'type': field_type,
+                    'size': field_size,
+                    'offset': field_offset,
+                    'array_element_count': array_element_count,
+                    'array_element_size': array_element_size,
+                    'double_79_extra1': double_79_extra1,
+                    'double_79_extra2': double_79_extra2
+                }
+                
+                parsed_fields.append(field_info)
+                        
+        except Exception as e:
+            self.logger.warning(f"Error parsing field definitions: {e}")
+        
+        return parsed_fields
+    
+    def _analyze_regular_table_for_arrays(self, table_def):
+        """
+        Analyze a regular table definition for array fields
+        
+        Args:
+            table_def: Regular table definition
+            
+        Returns:
+            Dictionary with has_arrays, array_fields, and regular_fields
+        """
+        has_arrays = False
+        array_fields = []
+        regular_fields = []
+        
+        if hasattr(table_def, 'fields'):
+            for field in table_def.fields:
+                if hasattr(field, 'array_element_count') and field.array_element_count > 1:
+                    # This is an array field
+                    has_arrays = True
+                    array_info = type('ArrayInfo', (), {
+                        'base_name': field.name,
+                        'element_count': field.array_element_count,
+                        'array_size': field.array_element_count,  # For compatibility with existing code
+                        'element_size': field.size // field.array_element_count if field.array_element_count > 0 else 0,
+                        'total_size': field.size,
+                        'field_type': field.type,
+                        'element_type': field.type,  # For compatibility with existing code
+                        'offset': field.offset,
+                        'start_offset': field.offset,  # For compatibility with existing code
+                        'is_single_field_array': True  # Regular table arrays are always single-field arrays
+                    })()
+                    array_fields.append(array_info)
+                else:
+                    # Regular field
+                    regular_fields.append(field)
+        
+        return {
+            'has_arrays': has_arrays,
+            'array_fields': array_fields,
+            'regular_fields': regular_fields
+        }
+
+    def _analyze_field_names_for_arrays(self, field_names: List[str]) -> Dict[str, Dict]:
+        """
+        Analyze field names to identify array patterns
+        
+        Args:
+            field_names: List of extracted field names
+            
+        Returns:
+            Dictionary mapping group names to array information
+        """
+        array_groups = {}
+        
+        # Group fields by prefix (e.g., FOR:, FLU:, GRF:)
+        prefix_groups = {}
+        for field_name in field_names:
+            if ':' in field_name:
+                prefix = field_name.split(':')[0] + ':'
+                if prefix not in prefix_groups:
+                    prefix_groups[prefix] = []
+                prefix_groups[prefix].append(field_name)
+            else:
+                # Field without prefix - treat as individual
+                array_groups[field_name] = {
+                    'is_array': False,
+                    'count': 1,
+                    'element_size': 8,
+                    'total_size': 8,
+                    'fields': [field_name]
+                }
+        
+        # Analyze each prefix group
+        for prefix, fields in prefix_groups.items():
+            if len(fields) > 1:
+                # For large groups (like FOR: with 41 fields), create multiple smaller arrays
+                if len(fields) > 20:
+                    # Group by field name patterns for large tables
+                    pattern_groups = self._group_fields_by_pattern(fields)
+                    
+                    for pattern_name, pattern_fields in pattern_groups.items():
+                        if len(pattern_fields) > 1:
+                            # Create array for this pattern
+                            array_groups[f"{prefix.rstrip(':')}_{pattern_name}"] = {
+                                'is_array': True,
+                                'count': len(pattern_fields),
+                                'element_size': 8,
+                                'total_size': len(pattern_fields) * 8,
+                                'fields': pattern_fields
+                            }
+                        else:
+                            # Single field in pattern - treat as individual
+                            field_name = pattern_fields[0]
+                            array_groups[field_name] = {
+                                'is_array': False,
+                                'count': 1,
+                                'element_size': 8,
+                                'total_size': 8,
+                                'fields': [field_name]
+                            }
+                else:
+                    # Small groups - treat as single array
+                    array_groups[prefix.rstrip(':')] = {
+                        'is_array': True,
+                        'count': len(fields),
+                        'element_size': 8,
+                        'total_size': len(fields) * 8,
+                        'fields': fields
+                    }
+            else:
+                # Single field with prefix - treat as individual
+                field_name = fields[0]
+                array_groups[field_name] = {
+                    'is_array': False,
+                    'count': 1,
+                    'element_size': 8,
+                    'total_size': 8,
+                    'fields': [field_name]
+                }
+        
+        return array_groups
+    
+    def _group_fields_by_pattern(self, fields: List[str]) -> Dict[str, List[str]]:
+        """
+        Group fields by common patterns for better array organization
+        
+        Args:
+            fields: List of field names with same prefix
+            
+        Returns:
+            Dictionary mapping pattern names to field lists
+        """
+        pattern_groups = {}
+        
+        # Define common patterns
+        patterns = {
+            'dates': ['DATE', 'END', 'BEG'],
+            'cumulative': ['CUM', 'BEGCUM', 'ENDCUM'],
+            'rates': ['Q_', 'RATE'],
+            'decline': ['DECL', 'N_FACTOR'],
+            'volumes': ['VOL', 'EUR'],
+            'symbols': ['SYM', 'SYMBOL'],
+            'types': ['TYPE', 'TYPECURVE', 'TYPEHIST'],
+            'products': ['PRODUCT', 'PROD'],
+            'values': ['VALUE', 'VAL'],
+            'colors': ['COLOR'],
+            'actions': ['ACTION'],
+            'codes': ['CODE', 'PCODE'],
+            'risks': ['RISK'],
+            'balances': ['BALANCE'],
+            'forms': ['FORM', 'COUNT'],
+            'switches': ['SWITCH'],
+            'precedence': ['PRECEDENCE'],
+            'overrides': ['OVER']
+        }
+        
+        # Group fields by patterns
+        for field in fields:
+            field_suffix = field.split(':', 1)[1] if ':' in field else field
+            matched = False
+            
+            for pattern_name, pattern_keywords in patterns.items():
+                if any(keyword in field_suffix.upper() for keyword in pattern_keywords):
+                    if pattern_name not in pattern_groups:
+                        pattern_groups[pattern_name] = []
+                    pattern_groups[pattern_name].append(field)
+                    matched = True
+                    break
+            
+            if not matched:
+                # No pattern match - group by first word
+                first_word = field_suffix.split('_')[0] if '_' in field_suffix else field_suffix[:4]
+                if first_word not in pattern_groups:
+                    pattern_groups[first_word] = []
+                pattern_groups[first_word].append(field)
+        
+        return pattern_groups
     
     def _extract_field_names_using_pytopspeed_structure(self, definition_bytes, field_count):
         """

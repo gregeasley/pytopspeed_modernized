@@ -118,6 +118,7 @@ Thumbs.db
 # Project specific
 temp/
 assets/
+debug/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
@@ -146,3 +147,4 @@ error_report_*.json
 test_output/
 debug_*
 verify_*
+COMPREHENSIVE_RECOVERY_PLAN.md

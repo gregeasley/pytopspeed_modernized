@@ -334,7 +334,56 @@ class ArrayFieldInfo:
 - **DOUBLE Arrays**: Preserved as JSON arrays of numbers
 - **BYTE Arrays**: Converted to JSON arrays of booleans (`true`/`false`)
 - **STRING Arrays**: Maintained as JSON arrays of strings
+- **SHORT Arrays**: Preserved as JSON arrays of integers
+- **LONG Arrays**: Preserved as JSON arrays of integers
+- **DECIMAL Arrays**: Preserved as JSON arrays of floating-point numbers
+- **DATE Arrays**: Preserved as JSON arrays of date strings (YYYY-MM-DD format)
 - **Null vs Zero**: Distinguishes between `null` (missing data) and `0.0` (actual zero)
+
+#### Enhanced Parsing Features
+
+- **Comprehensive Type Mapping**: Supports all TopSpeed field types including type 79 (DOUBLE_79)
+- **Generic Binary Data Detection**: Automatically detects and parses numeric binary data in STRING fields
+- **Dynamic Field Offset Calculation**: Correctly calculates field offsets for complex table structures
+- **Large Table Support**: Handles tables with 100+ fields without artificial limits
+- **Robust Error Recovery**: Continues parsing even when individual fields fail
+
+#### Enhanced Parsing Capabilities
+
+The multidimensional handler now includes advanced parsing features:
+
+##### Comprehensive Type Support
+
+```python
+# All TopSpeed field types are now supported:
+# - Type 79 (DOUBLE_79): Special DOUBLE fields with extended metadata
+# - Type 83/82 (SHORT): 16-bit signed integers
+# - Type 0 (DOUBLE): Standard 8-byte floating point
+# - Type 84/67/14 (STRING): Variable length strings
+# - Type 248 (DECIMAL): Decimal numbers
+# - Type 65 (BYTE): 8-bit unsigned integers
+# - Type 44 (DATE): Date fields
+# - Type 69 (LONG): 32-bit signed integers
+```
+
+##### Generic Binary Data Detection
+
+```python
+# Automatically detects when STRING fields contain binary data
+# and parses them as appropriate numeric types:
+# - 4-byte fields → 32-bit unsigned integers
+# - 2-byte fields → 16-bit unsigned integers  
+# - 1-byte fields → 8-bit unsigned integers
+```
+
+##### Large Table Support
+
+```python
+# No artificial limits on table size:
+# - Tables with 100+ fields are fully supported
+# - Dynamic field offset calculation
+# - Robust error recovery for individual field failures
+```
 
 #### Example Usage
 

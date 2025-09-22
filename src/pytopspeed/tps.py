@@ -132,6 +132,9 @@ class TPS:
             except Exception as e:
                 if "ConstError" in str(type(e)):
                     print("Bad cryptographic keys.")
+                    # Initialize minimal attributes for failed TPS objects
+                    self.pages = None
+                    self.tables = None
                 else:
                     raise
 

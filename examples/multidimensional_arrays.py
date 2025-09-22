@@ -11,6 +11,10 @@ Features demonstrated:
 - JSON querying in SQLite
 - Data type preservation (null vs zero)
 - Boolean array handling
+- Enhanced type mapping (including type 79 DOUBLE_79 fields)
+- Generic binary data detection
+- Large table support (100+ fields)
+- Robust error recovery
 """
 
 import sys
@@ -286,6 +290,10 @@ def demonstrate_multidimensional_handling():
     print("  - Both single-field and multi-field arrays are supported")
     print("  - Data types are preserved (null vs zero, boolean values)")
     print("  - SQLite JSON functions can be used to query array data")
+    print("  - Enhanced type mapping supports all TopSpeed field types")
+    print("  - Generic binary data detection handles misidentified STRING fields")
+    print("  - Large tables (100+ fields) are fully supported")
+    print("  - Robust error recovery ensures maximum data extraction")
     print("  - No manual configuration required - everything is automatic!")
 
 

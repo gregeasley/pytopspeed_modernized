@@ -17,6 +17,8 @@ class ArrayFieldInfo:
     start_offset: int
     element_offsets: List[int]
     is_single_field_array: bool = False  # True if detected as single-field array, False if multi-field array
+    double_79_extra1: int = None  # Extra field 1 for type 79 fields
+    double_79_extra2: int = None  # Extra field 2 for type 79 fields
 
 class MultidimensionalHandler:
     """Handles multi-dimensional fields and tables in TopSpeed format"""
@@ -39,9 +41,35 @@ class MultidimensionalHandler:
         # Group fields by base name to identify arrays
         field_groups = {}
         for field in table_def.fields:
-            # Skip grouping for enhanced fields - they should remain individual
+            # Handle enhanced fields with array information
             if hasattr(field, 'is_enhanced_field') and field.is_enhanced_field:
-                analysis['regular_fields'].append(field)
+                # Check if this enhanced field is an array
+                array_count = getattr(field, 'array_element_count', 1)
+                if array_count > 1:
+                    # This is an enhanced array field
+                    element_size = getattr(field, 'array_element_size', None)
+                    if element_size is None:
+                        # Calculate element size from total size and array count
+                        total_size = getattr(field, 'size', 8)
+                        element_size = total_size // array_count if array_count > 0 else 8
+                    
+                    array_info = ArrayFieldInfo(
+                        base_name=field.name,
+                        element_type=getattr(field, 'type', 'unknown'),
+                        element_size=element_size,
+                        array_size=array_count,
+                        start_offset=getattr(field, 'offset', 0),
+                        element_offsets=[getattr(field, 'offset', 0) + i * element_size for i in range(array_count)],
+                        is_single_field_array=True,
+                        double_79_extra1=getattr(field, 'double_79_extra1', None),
+                        double_79_extra2=getattr(field, 'double_79_extra2', None)
+                    )
+                    analysis['has_arrays'] = True
+                    analysis['array_fields'].append(array_info)
+                    self.array_fields[field.name] = array_info
+                else:
+                    # Regular enhanced field
+                    analysis['regular_fields'].append(field)
                 continue
                 
             field_size = getattr(field, 'size', 8)
@@ -138,7 +166,9 @@ class MultidimensionalHandler:
                 element_size=element_size,
                 array_size=array_size,
                 start_offset=offsets[0],
-                element_offsets=offsets
+                element_offsets=offsets,
+                double_79_extra1=getattr(fields[0], 'double_79_extra1', None),
+                double_79_extra2=getattr(fields[0], 'double_79_extra2', None)
             )
         
         return None
@@ -166,31 +196,58 @@ class MultidimensionalHandler:
                 element_size=element_size,
                 array_size=array_element_count,
                 start_offset=field.offset,
-                element_offsets=[field.offset + i * element_size for i in range(array_element_count)]
+                element_offsets=[field.offset + i * element_size for i in range(array_element_count)],
+                double_79_extra1=getattr(field, 'double_79_extra1', None),
+                double_79_extra2=getattr(field, 'double_79_extra2', None)
             )
         
         # If array_element_count == 1, this is a single field (not an array)
         return None
     
-    def parse_record_data(self, data: bytes, analysis: Dict[str, Any]) -> Dict[str, Any]:
+    def parse_record_data(self, data, analysis: Dict[str, Any]) -> Dict[str, Any]:
         """Parse record data handling multi-dimensional fields"""
         parsed_data = {}
         
-        # Parse regular fields
-        for field in analysis['regular_fields']:
-            field_name = field.name
-            field_value = self._parse_field_value(data, field)
-            parsed_data[field_name] = field_value
+        # Handle dictionary records (from TPS iterator)
+        if isinstance(data, dict):
+            # Parse regular fields
+            for field in analysis['regular_fields']:
+                field_name = field.name
+                parsed_data[field_name] = data.get(field_name, None)
+            
+            # Parse array fields - combine individual array elements into arrays
+            for array_info in analysis['array_fields']:
+                array_values = []
+                for i in range(array_info.array_size):
+                    # Look for individual array elements in the record
+                    element_name = f"{array_info.base_name}{i+1}"
+                    element_value = data.get(element_name, None)
+                    array_values.append(element_value)
+                parsed_data[array_info.base_name] = array_values
+            
+            return parsed_data
         
-        # Parse array fields
-        for array_info in analysis['array_fields']:
-            array_data = self._parse_array_field(data, array_info)
-            parsed_data[array_info.base_name] = array_data
+        # Handle raw bytes data
+        elif isinstance(data, bytes):
+            # Parse regular fields
+            for field in analysis['regular_fields']:
+                field_name = field.name
+                field_value = self._parse_field_value(data, field)
+                parsed_data[field_name] = field_value
+            
+            # Parse array fields
+            for array_info in analysis['array_fields']:
+                array_data = self._parse_array_field(data, array_info)
+                parsed_data[array_info.base_name] = array_data
+            
+            return parsed_data
         
-        return parsed_data
+        else:
+            # Unknown data type, return empty dict
+            return {}
     
-    def _parse_field_value(self, data: bytes, field) -> Any:
-        """Parse a single field value from data"""
+    def _parse_multidimensional_field_value_from_binary(self, data: bytes, field) -> Any:
+        """Parse individual field values from binary data for multidimensional tables"""
         try:
             offset = field.offset
             field_type = field.type
@@ -201,50 +258,147 @@ class MultidimensionalHandler:
             
             field_data = data[offset:offset + field_size]
             
-            if field_type == 'STRING':
-                return field_data.decode('ascii', errors='replace').rstrip('\x00')
-            elif field_type == 'DOUBLE':
-                if len(field_data) >= 8:
-                    return struct.unpack('<d', field_data[:8])[0]
-            elif field_type == 'SHORT':
-                if len(field_data) >= 2:
-                    return struct.unpack('<h', field_data[:2])[0]
-            elif field_type == 'LONG':
-                if len(field_data) >= 4:
-                    return struct.unpack('<i', field_data[:4])[0]
-            elif field_type == 'BYTE':
-                if len(field_data) >= 1:
-                    # Convert BYTE to boolean: 0 = False, non-zero = True
-                    return bool(field_data[0])
-            elif field_type in ['BOOL', 'BOOLEAN']:
-                if len(field_data) >= 1:
-                    # Convert BOOL/BOOLEAN to boolean: 0 = False, non-zero = True
-                    return bool(field_data[0])
-            
-            return field_data.hex()
+            # Handle type 79 fields (array field markers)
+            if field_type == 'DOUBLE_79' or str(field_type) == '79':
+                actual_type = self._get_actual_data_type_for_type79(field)
+                return self._parse_field_by_type(field_data, actual_type)
+            else:
+                return self._parse_field_by_type(field_data, str(field_type))
             
         except Exception as e:
             return None
     
-    def _parse_array_field(self, data: bytes, array_info: ArrayFieldInfo) -> List[Any]:
-        """Parse an array field from data"""
+    def _get_actual_data_type_for_type79(self, field) -> str:
+        """Determine actual data type for type 79 fields"""
+        # Check if field has the extra fields that indicate actual type
+        extra1 = getattr(field, 'double_79_extra1', None)
+        extra2 = getattr(field, 'double_79_extra2', None)
+        
+        # Based on the FORCAST.csv analysis, type 79 fields can be various types
+        # The extra values determine the actual type
+        if extra2 is not None:
+            if extra2 == 17920:
+                return 'INTEGER_79'
+            elif extra2 == 17921:
+                return 'DOUBLE_79'
+            elif extra2 == 1:
+                # Based on FORCAST data, this appears to be INTEGER
+                return 'INTEGER_79'
+            elif extra2 == 18245:
+                # Based on FORCAST data, this appears to be INTEGER  
+                return 'INTEGER_79'
+        
+        # Default fallback - try to determine from extra1
+        if extra1 is not None:
+            if extra1 == 16954:
+                return 'INTEGER_79'
+            elif extra1 == 69:
+                return 'INTEGER_79'
+        
+        # If we can't determine, default to INTEGER since most type 79 fields in FORCAST are integers
+        return 'INTEGER_79'
+    
+    def _parse_field_by_type(self, field_data: bytes, field_type: str) -> Any:
+        """Parse field data based on type"""
+        # Handle both string field types and numeric type codes
+        field_type_str = str(field_type)
+        
+        # Map numeric type codes to string types
+        type_code_mapping = {
+            '2': 'SHORT',      # SHORT
+            '6': 'LONG',       # LONG  
+            '9': 'DOUBLE',     # DOUBLE
+            '1': 'BYTE',       # BYTE
+            '18': 'STRING',    # STRING
+            '10': 'DECIMAL',   # DECIMAL
+            '0': 'STRING',     # Default to STRING for unknown type 0
+            '83': 'SHORT',     # SHORT variant
+            '82': 'SHORT',     # SHORT variant
+            '84': 'BYTE',      # BYTE variant
+            '67': 'STRING',    # STRING variant
+            '70': 'BYTE',      # BYTE variant
+            '248': 'DOUBLE',   # DOUBLE variant
+            '44': 'SHORT',     # SHORT variant
+            '65': 'BYTE',      # BYTE variant
+            '69': 'BYTE',      # BYTE variant
+            '79': 'DOUBLE_79', # Type 79 array field marker
+            '14': 'BYTE',      # BYTE variant
+        }
+        
+        # Convert numeric type codes to string types
+        if field_type_str in type_code_mapping:
+            field_type_str = type_code_mapping[field_type_str]
+        
+        # Parse based on field type
+        if field_type_str == 'STRING':
+            try:
+                return field_data.decode('ascii', errors='replace').rstrip('\x00')
+            except Exception:
+                return field_data.decode('latin-1', errors='replace').rstrip('\x00')
+        elif field_type_str in ['DOUBLE', 'DOUBLE_79']:
+            if len(field_data) >= 8:
+                return struct.unpack('<d', field_data[:8])[0]
+        elif field_type_str in ['SHORT', 'INTEGER_79']:
+            if len(field_data) >= 2:
+                return struct.unpack('<h', field_data[:2])[0]
+        elif field_type_str == 'LONG':
+            if len(field_data) >= 4:
+                return struct.unpack('<i', field_data[:4])[0]
+        elif field_type_str == 'BYTE':
+            if len(field_data) >= 1:
+                # Convert BYTE to boolean: 0 = False, non-zero = True
+                return bool(field_data[0])
+        elif field_type_str == 'DECIMAL':
+            if len(field_data) >= 8:
+                return struct.unpack('<d', field_data[:8])[0]
+        elif field_type_str in ['BOOL', 'BOOLEAN']:
+            if len(field_data) >= 1:
+                # Convert BOOL/BOOLEAN to boolean: 0 = False, non-zero = True
+                return bool(field_data[0])
+        
+        # For unknown types, try to parse as hex string
+        return field_data.hex()
+    
+    def _parse_field_value(self, data: bytes, field) -> Any:
+        """Parse a single field value from data (legacy method for compatibility)"""
+        return self._parse_multidimensional_field_value_from_binary(data, field)
+    
+    def _parse_multidimensional_array_field_from_binary(self, data: bytes, array_info: ArrayFieldInfo) -> List[Any]:
+        """Parse array fields from binary data for multidimensional tables"""
         array_data = []
         
-        for i, offset in enumerate(array_info.element_offsets):
-            if offset < len(data):
+        for i in range(array_info.array_size):
+            if array_info.is_single_field_array:
+                # Single field array - elements are contiguous
+                element_offset = array_info.start_offset + (i * array_info.element_size)
+            else:
+                # Multi-field array - use pre-calculated offsets
+                if i < len(array_info.element_offsets):
+                    element_offset = array_info.element_offsets[i]
+                else:
+                    array_data.append(None)
+                    continue
+            
+            if element_offset < len(data):
                 # Create a mock field for this array element
                 mock_field = type('MockField', (), {
-                    'offset': offset,
+                    'offset': element_offset,
                     'type': array_info.element_type,
-                    'size': array_info.element_size
+                    'size': array_info.element_size,
+                    'double_79_extra1': array_info.double_79_extra1,
+                    'double_79_extra2': array_info.double_79_extra2
                 })()
                 
-                element_value = self._parse_field_value(data, mock_field)
+                element_value = self._parse_multidimensional_field_value_from_binary(data, mock_field)
                 array_data.append(element_value)
             else:
                 array_data.append(None)
         
         return array_data
+    
+    def _parse_array_field(self, data: bytes, array_info: ArrayFieldInfo) -> List[Any]:
+        """Parse an array field from data (legacy method for compatibility)"""
+        return self._parse_multidimensional_array_field_from_binary(data, array_info)
     
     def create_sqlite_schema(self, table_name: str, analysis: Dict[str, Any], table_def=None) -> str:
         """Create SQLite schema for a table with multi-dimensional fields"""

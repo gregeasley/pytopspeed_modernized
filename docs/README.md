@@ -134,6 +134,20 @@ When converting multiple files, tables are automatically prefixed to avoid confl
 | DECIMAL | REAL | Floating point number |
 | MEMO | BLOB | Binary large object |
 | BLOB | BLOB | Binary large object |
+| DOUBLE | REAL | 8-byte floating point |
+| DOUBLE_79 | REAL | Special DOUBLE fields (type 79) |
+
+### Multidimensional Arrays
+
+The library automatically detects and converts TopSpeed multidimensional arrays to JSON format:
+
+- **Automatic Detection**: Both single-field and multi-field arrays are detected
+- **JSON Storage**: Arrays are stored as JSON in SQLite TEXT columns
+- **Type Preservation**: All data types are preserved (null vs zero, boolean values)
+- **Enhanced Parsing**: Supports all TopSpeed field types including type 79 (DOUBLE_79)
+- **Generic Binary Detection**: Automatically detects and parses binary data in STRING fields
+- **Large Table Support**: Handles tables with 100+ fields without limits
+- **Robust Recovery**: Continues parsing even when individual fields fail
 
 ### Column Name Sanitization
 

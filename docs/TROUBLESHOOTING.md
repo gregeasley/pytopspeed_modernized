@@ -111,6 +111,30 @@ stream read less than specified amount, expected 1, found 0
 - Check for zombie processes
 - Use a different output filename
 
+### 7. "Unicode nonsense" in Color Fields
+
+**Error**: Fields like PRODUCTCOLOR, BACKSTARTCOLOR showing corrupted characters
+
+**Cause**: STRING fields containing binary data being incorrectly parsed as text
+
+**Solutions**:
+- This is now automatically handled by generic binary data detection
+- STRING fields containing binary data are automatically parsed as integers
+- No manual intervention required
+- The system detects small STRING fields (1-4 bytes) with non-printable characters
+
+### 8. "Array fields parsing as None"
+
+**Error**: BEGCUM and other array fields showing as None values
+
+**Cause**: Incorrect field offset calculation or unsupported field types
+
+**Solutions**:
+- Fixed with enhanced type mapping and dynamic offset calculation
+- Type 79 (DOUBLE_79) fields now properly supported
+- Large tables (100+ fields) fully supported
+- Robust error recovery ensures maximum data extraction
+
 ## 🔧 Conversion Issues
 
 ### Slow Conversion Performance

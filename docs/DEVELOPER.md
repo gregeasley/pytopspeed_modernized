@@ -97,6 +97,14 @@ pytopspeed_modernized/
 - **File**: `src/converter/sqlite_converter.py`
 - **Purpose**: Converts TopSpeed data to SQLite format
 - **Key Methods**: `convert()`, `convert_multiple()`, `_create_schema()`, `_migrate_table_data()`
+- **Enhanced Features**: 
+  - `_create_enhanced_table_definition()`: Advanced table definition parsing
+  - `_parse_multidimensional_field_value_from_binary()`: Enhanced field parsing
+  - `_parse_multidimensional_array_field_from_binary()`: Array field parsing
+  - Comprehensive type mapping for all TopSpeed field types
+  - Generic binary data detection for misidentified STRING fields
+  - Dynamic field offset calculation for complex table structures
+  - Large table support (100+ fields) without artificial limits
 
 #### TopSpeedToSQLiteMapper
 - **File**: `src/converter/schema_mapper.py`
@@ -365,6 +373,48 @@ Install pre-commit hooks:
 ```bash
 pip install pre-commit
 pre-commit install
+```
+
+## 🚀 Recent Technical Improvements
+
+### Enhanced Multidimensional Parsing
+
+The library has undergone significant improvements to handle complex TopSpeed table structures:
+
+#### Comprehensive Type Mapping
+- **All TopSpeed Types Supported**: Including type 79 (DOUBLE_79), type 83/82 (SHORT), type 0 (DOUBLE), etc.
+- **Dynamic Type Detection**: Automatically maps raw type codes to appropriate Python types
+- **Generic Binary Data Detection**: Identifies when STRING fields contain binary data and parses them as integers
+
+#### Advanced Field Offset Calculation
+- **Dynamic Offset Calculation**: Replaces fixed offset increments with calculated field definition sizes
+- **Type-Specific Handling**: Special handling for DOUBLE_79 fields with extra metadata bytes
+- **Robust Error Recovery**: Continues parsing even when individual fields fail
+
+#### Large Table Support
+- **No Artificial Limits**: Removed 50-field limit for enhanced table definition parsing
+- **Scalable Architecture**: Handles tables with 100+ fields efficiently
+- **Memory Optimization**: Efficient processing of large table structures
+
+#### Technical Implementation Details
+
+```python
+# Enhanced field type mapping
+FIELD_TYPE_STRUCT = Enum(Byte,
+    BYTE=1, SHORT=2, DATE=3, TIME=4, LONG=5, STRING=6, DECIMAL=7, MEMO=8, BLOB=9,
+    CSTRING=10, PSTRING=11, PICTURE=12, DOUBLE=13, DOUBLE_79=79, _default_='STRING'
+)
+
+# Generic binary data detection
+if type_code in ['STRING', 'CSTRING', '6', '10']:
+    if len(field_data) <= 4 and any(byte < 32 or byte > 126 for byte in field_data if byte != 0):
+        # Parse as integer based on field size
+        if len(field_data) >= 4:
+            return struct.unpack('<I', field_data[:4])[0]  # 32-bit integer
+        elif len(field_data) >= 2:
+            return struct.unpack('<H', field_data[:2])[0]  # 16-bit integer
+        elif len(field_data) >= 1:
+            return field_data[0]  # 8-bit integer
 ```
 
 ## 🔧 Extension Guidelines

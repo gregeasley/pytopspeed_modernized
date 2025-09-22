@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Reverse Converter - Convert SQLite databases back to TopSpeed files
+Improved Reverse Converter - Phase 2.1 Implementation
 
-This module provides functionality to convert SQLite databases back to
-TopSpeed .phd and .mod files, reconstructing the binary format.
+This module implements the improved reverse converter with proper TopSpeed header format
+based on the detailed format specification from Phase 1 analysis.
 """
 
 import os
@@ -21,14 +21,15 @@ from construct import (
 )
 
 
-class ReverseConverter:
+class ImprovedReverseConverter:
     """
-    Converter for creating TopSpeed files from SQLite databases
+    Improved converter for creating TopSpeed files from SQLite databases
+    with proper header format implementation
     """
     
     def __init__(self, progress_callback=None):
         """
-        Initialize reverse converter
+        Initialize improved reverse converter
         
         Args:
             progress_callback: Optional callback function for progress updates
@@ -42,7 +43,7 @@ class ReverseConverter:
     def _init_construct_structures(self):
         """Initialize construct structures for TopSpeed file format"""
         
-        # Field types
+        # Field types (from pytopspeed analysis)
         self.FIELD_TYPE_STRUCT = Enum(Byte,
             BYTE=1,
             SHORT=2,
@@ -74,58 +75,6 @@ class ReverseConverter:
             "decimal_size" / If(lambda x: x['type'] == 'DECIMAL', Byte),
         )
         
-        # Index structures
-        self.INDEX_TYPE_STRUCT = Enum(BitsInteger(2),
-            INDEX=1,
-            DYNAMIC_INDEX=2
-        )
-        
-        self.INDEX_FIELD_ORDER_TYPE_STRUCT = Enum(Int16ul,
-            ASCENDING=0,
-            DESCENDING=1,
-            _default_='DESCENDING'
-        )
-        
-        self.TABLE_DEFINITION_INDEX_STRUCT = Struct(
-            "external_filename" / CString("ascii"),
-            "index_mark" / If(lambda x: len(x['external_filename']) == 0, Const(1, Byte)),
-            "name" / CString("ascii"),
-            "flags" / BitStruct(
-                Padding(1),
-                "type" / self.INDEX_TYPE_STRUCT,
-                Padding(2),
-                "NOCASE" / Flag,
-                "OPT" / Flag,
-                "DUP" / Flag
-            ),
-            "field_count" / Int16ul,
-            "fields" / Array(lambda x: x['field_count'],
-                Struct(
-                    "field_number" / Int16ul,
-                    "order_type" / self.INDEX_FIELD_ORDER_TYPE_STRUCT
-                )
-            )
-        )
-        
-        # Memo structures
-        self.MEMO_TYPE_STRUCT = Enum(Flag,
-            BLOB=1
-        )
-        
-        self.TABLE_DEFINITION_MEMO_STRUCT = Struct(
-            "external_filename" / CString("ascii"),
-            "memo_mark" / If(lambda x: len(x['external_filename']) == 0, Const(1, Byte)),
-            "name" / CString("ascii"),
-            "size" / Int16ul,
-            "flags" / BitStruct(
-                Padding(5),
-                "memo_type" / self.MEMO_TYPE_STRUCT,
-                "BINARY" / Flag,
-                "Flag" / Flag,
-                Padding(8)
-            )
-        )
-        
         # Complete table definition
         self.TABLE_DEFINITION_STRUCT = Struct(
             "min_version_driver" / Int16ul,
@@ -134,8 +83,8 @@ class ReverseConverter:
             "memo_count" / Int16ul,
             "index_count" / Int16ul,
             "fields" / Array(lambda x: x['field_count'], self.TABLE_DEFINITION_FIELD_STRUCT),
-            "memos" / Array(lambda x: x['memo_count'], self.TABLE_DEFINITION_MEMO_STRUCT),
-            "indexes" / Array(lambda x: x['index_count'], self.TABLE_DEFINITION_INDEX_STRUCT)
+            "memos" / Array(lambda x: x['memo_count'], Bytes(1)),  # Simplified for now
+            "indexes" / Array(lambda x: x['index_count'], Bytes(1))  # Simplified for now
         )
         
         # Record structures
@@ -149,46 +98,38 @@ class ReverseConverter:
             _default_='INDEX'
         )
         
-        self.DATA_RECORD_DATA = Struct(
-            "record_number" / Int32ub,
-            "data" / Bytes(lambda ctx: ctx._.data_size - 9)
-        )
-        
-        self.TABLE_DEFINITION_RECORD_DATA = Struct(
-            "table_definition_bytes" / Bytes(lambda ctx: ctx._.data_size - 5)
-        )
-        
-        # Page header structure
+        # Page header structure (from format specification)
         self.PAGE_HEADER_STRUCT = Struct(
             "offset" / Int32ul,
             "size" / Int16ul,
             "uncompressed_size" / Int16ul,
             "uncompressed_unabridged_size" / Int16ul,
             "record_count" / Int16ul,
-            "hierarchy_level" / Byte
+            "hierarchy_level" / Byte,
+            "padding" / Bytes(7)  # 7 bytes padding to make 16 bytes total
         )
         
-        # File header structure
+        # File header structure (exact format from specification)
         self.FILE_HEADER_STRUCT = Struct(
-            "offset" / Int32ul,
-            "size" / Int16ul,
-            "file_size" / Int32ul,
-            "allocated_file_size" / Int32ul,
-            "top_speed_mark" / Const(b"tOpS\x00\x00"),
-            "last_issued_row" / Int32ub,
-            "change_count" / Int32ul,
-            "page_root_ref" / Int32ul,
-            "block_start_ref" / Array(lambda ctx: (ctx["size"] - 0x20) // 2 // 4, Int32ul),
-            "block_end_ref" / Array(lambda ctx: (ctx["size"] - 0x20) // 2 // 4, Int32ul)
+            "offset" / Int32ul,                    # 0x00: Always 0x00000000
+            "size" / Int16ul,                      # 0x04: Header size (0x0200)
+            "file_size" / Int32ul,                 # 0x06: Total file size
+            "allocated_file_size" / Int32ul,       # 0x0A: Allocated file size
+            "top_speed_mark" / Const(b"tOpS\x00\x00"),  # 0x0E: Signature
+            "last_issued_row" / Int32ub,           # 0x14: Last issued row (big-endian)
+            "change_count" / Int32ul,              # 0x18: Change count (little-endian)
+            "page_root_ref" / Int32ul,             # 0x1C: Page root reference
+            "block_references" / Bytes(0x1E0)      # 0x20: Block references (480 bytes)
         )
     
-    def convert_sqlite_to_topspeed(self, sqlite_file: str, output_dir: str) -> Dict[str, Any]:
+    def create_topspeed_file(self, sqlite_file: str, output_file: str, file_type: str = "PHD") -> Dict[str, Any]:
         """
-        Convert SQLite database back to TopSpeed files
+        Create a TopSpeed file from SQLite database with proper header format
         
         Args:
             sqlite_file: Path to input SQLite file
-            output_dir: Directory to write output files
+            output_file: Path to output TopSpeed file
+            file_type: Type of file (PHD or MOD)
             
         Returns:
             Dictionary with conversion results
@@ -196,14 +137,18 @@ class ReverseConverter:
         start_time = datetime.now()
         results = {
             'success': False,
-            'files_created': [],
+            'file_created': output_file,
             'tables_processed': 0,
             'records_processed': 0,
             'duration': 0,
-            'errors': []
+            'errors': [],
+            'file_size': 0,
+            'header_info': {}
         }
         
         try:
+            self.logger.info(f"Creating {file_type} file: {output_file}")
+            
             # Check if input file exists
             if not os.path.exists(sqlite_file):
                 error_msg = f"SQLite file not found: {sqlite_file}"
@@ -211,107 +156,46 @@ class ReverseConverter:
                 results['errors'].append(error_msg)
                 return results
             
-            self.logger.info(f"Starting reverse conversion: {sqlite_file} -> {output_dir}")
-            
-            # Create output directory
-            os.makedirs(output_dir, exist_ok=True)
-            
             # Connect to SQLite database
             conn = sqlite3.connect(sqlite_file)
             cursor = conn.cursor()
             
-            # Get all tables and categorize by prefix
+            # Get all tables
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
             all_tables = [row[0] for row in cursor.fetchall()]
             
-            phd_tables = [t for t in all_tables if t.startswith('phd_')]
-            mod_tables = [t for t in all_tables if t.startswith('mod_')]
+            # Filter tables by prefix if present
+            if file_type == "PHD":
+                tables = [t for t in all_tables if t.startswith('phd_') or not any(t.startswith(p) for p in ['phd_', 'mod_'])]
+            else:  # MOD
+                tables = [t for t in all_tables if t.startswith('mod_')]
             
-            # If no prefixed tables found, treat all tables as PHD tables (single file conversion)
-            if not phd_tables and not mod_tables and all_tables:
-                phd_tables = all_tables
-                self.logger.info(f"No prefixed tables found, treating all {len(all_tables)} tables as PHD tables")
-            else:
-                self.logger.info(f"Found {len(phd_tables)} PHD tables, {len(mod_tables)} MOD tables")
+            if not tables:
+                error_msg = f"No {file_type} tables found in SQLite database"
+                self.logger.error(error_msg)
+                results['errors'].append(error_msg)
+                conn.close()
+                return results
             
-            # Process PHD file if we have PHD tables
-            if phd_tables:
-                phd_file = os.path.join(output_dir, "TxWells.PHD")
-                phd_result = self._create_topspeed_file(
-                    conn, phd_tables, phd_file, "PHD"
-                )
-                if phd_result['success']:
-                    results['files_created'].append(phd_file)
-                    results['tables_processed'] += phd_result['tables_processed']
-                    results['records_processed'] += phd_result['records_processed']
-                else:
-                    results['errors'].extend(phd_result['errors'])
+            self.logger.info(f"Found {len(tables)} {file_type} tables to process")
             
-            # Process MOD file if we have MOD tables
-            if mod_tables:
-                mod_file = os.path.join(output_dir, "TxWells.mod")
-                mod_result = self._create_topspeed_file(
-                    conn, mod_tables, mod_file, "MOD"
-                )
-                if mod_result['success']:
-                    results['files_created'].append(mod_file)
-                    results['tables_processed'] += mod_result['tables_processed']
-                    results['records_processed'] += mod_result['records_processed']
-                else:
-                    results['errors'].extend(mod_result['errors'])
-            
-            conn.close()
-            
-            results['success'] = len(results['files_created']) > 0
-            self.logger.info(f"Reverse conversion completed: {results['success']}")
-            
-        except Exception as e:
-            self.logger.error(f"Reverse conversion failed: {e}")
-            results['errors'].append(str(e))
-        
-        finally:
-            end_time = datetime.now()
-            results['duration'] = (end_time - start_time).total_seconds()
-            
-        return results
-    
-    def _create_topspeed_file(self, conn: sqlite3.Connection, tables: List[str], 
-                            output_file: str, file_type: str) -> Dict[str, Any]:
-        """
-        Create a TopSpeed file from SQLite tables
-        
-        Args:
-            conn: SQLite connection
-            tables: List of table names to include
-            output_file: Output file path
-            file_type: Type of file (PHD or MOD)
-            
-        Returns:
-            Dictionary with conversion results
-        """
-        results = {
-            'success': False,
-            'tables_processed': 0,
-            'records_processed': 0,
-            'errors': []
-        }
-        
-        try:
-            self.logger.info(f"Creating {file_type} file: {output_file}")
-            
-            # Create file with basic structure
+            # Create file with proper header
             with open(output_file, 'wb') as f:
-                # Write file header with proper size estimation
-                estimated_size = 0x200 + (len(tables) * 0x1000)  # Header + rough table estimate
-                header_data = self._create_file_header(len(tables), estimated_size)
+                # First, estimate file size
+                estimated_size = self._estimate_file_size(conn, tables)
+                self.logger.info(f"Estimated file size: {estimated_size:,} bytes")
+                
+                # Create and write proper header
+                header_data = self._create_proper_file_header(estimated_size, file_type)
                 f.write(header_data)
+                results['header_info'] = self._parse_header_info(header_data)
                 
                 # Write table definitions and data
                 for table_name in tables:
                     self.logger.info(f"Processing table: {table_name}")
                     
                     # Remove prefix to get original table name
-                    original_name = table_name[4:]  # Remove 'phd_' or 'mod_' prefix
+                    original_name = table_name[4:] if table_name.startswith(('phd_', 'mod_')) else table_name
                     
                     # Get table schema from SQLite
                     table_schema = self._get_table_schema(conn, table_name)
@@ -333,53 +217,162 @@ class ReverseConverter:
                     
                     self.logger.info(f"Processed {record_count} records from {table_name}")
             
+            # Get actual file size and update header if needed
+            actual_file_size = os.path.getsize(output_file)
+            results['file_size'] = actual_file_size
+            
+            # Update header with actual file size if different
+            if actual_file_size != estimated_size:
+                self.logger.info(f"Updating header with actual file size: {actual_file_size:,} bytes")
+                self._update_file_header_size(output_file, actual_file_size)
+            
+            conn.close()
+            
             results['success'] = True
-            self.logger.info(f"Successfully created {file_type} file with {results['tables_processed']} tables")
+            self.logger.info(f"Successfully created {file_type} file: {output_file}")
+            self.logger.info(f"Final file size: {results['file_size']:,} bytes")
             
         except Exception as e:
             self.logger.error(f"Error creating {file_type} file: {e}")
             results['errors'].append(str(e))
         
+        finally:
+            end_time = datetime.now()
+            results['duration'] = (end_time - start_time).total_seconds()
+            
         return results
     
-    def _create_file_header(self, table_count: int, file_size: int = 0x10000) -> bytes:
-        """Create TopSpeed file header matching the exact format expected by pytopspeed"""
-        # TopSpeed header structure (from pytopspeed/tps.py):
-        # offset (4 bytes) + size (2 bytes) + file_size (4 bytes) + allocated_file_size (4 bytes)
-        # + top_speed_mark (6 bytes) + last_issued_row (4 bytes) + change_count (4 bytes) 
-        # + page_root_ref (4 bytes) + block references
+    def _estimate_file_size(self, conn: sqlite3.Connection, tables: List[str]) -> int:
+        """Estimate file size based on tables and data"""
+        base_size = 0x200  # Header size
         
-        header_data = struct.pack('<I', 0x200)  # offset - header starts at 0x200
-        header_data += struct.pack('<H', 0x200)  # size - header is 0x200 bytes
+        cursor = conn.cursor()
+        total_records = 0
+        total_fields = 0
+        
+        for table_name in tables:
+            # Count records
+            cursor.execute(f"SELECT COUNT(*) FROM [{table_name}]")
+            record_count = cursor.fetchone()[0]
+            total_records += record_count
+            
+            # Count fields
+            cursor.execute(f"PRAGMA table_info([{table_name}])")
+            field_count = len(cursor.fetchall())
+            total_fields += field_count
+        
+        # Estimate sizes
+        # Each table needs: name record + definition record + data records
+        table_overhead = len(tables) * 0x200  # Rough estimate for table metadata
+        record_overhead = total_records * 0x100  # Rough estimate for record overhead
+        data_size = total_records * 0x200  # Rough estimate for actual data
+        
+        estimated_size = base_size + table_overhead + record_overhead + data_size
+        
+        # Round up to nearest 64-byte boundary (TopSpeed requirement)
+        estimated_size = ((estimated_size + 63) // 64) * 64
+        
+        return estimated_size
+    
+    def _create_proper_file_header(self, file_size: int, file_type: str) -> bytes:
+        """
+        Create proper TopSpeed file header matching exact format specification
+        
+        Args:
+            file_size: Estimated total file size
+            file_type: Type of file (PHD or MOD)
+            
+        Returns:
+            Properly formatted header bytes
+        """
+        # Calculate page root reference (first page after header)
+        page_root_ref = 1 if file_type == "MOD" else 2  # Based on analysis
+        
+        # Calculate last issued row and change count
+        last_issued_row = 1
+        change_count = 1
+        
+        # Create header data
+        header_data = struct.pack('<I', 0x00000000)  # offset (always 0)
+        header_data += struct.pack('<H', 0x0200)     # size (always 512)
         header_data += struct.pack('<I', file_size)  # file_size
         header_data += struct.pack('<I', file_size)  # allocated_file_size (same as file_size)
-        header_data += b"tOpS\x00\x00"  # top_speed_mark - exact signature
-        header_data += struct.pack('>I', 1)  # last_issued_row (big-endian)
-        header_data += struct.pack('<I', 1)  # change_count
-        header_data += struct.pack('<I', 1)  # page_root_ref - first page after header
+        header_data += b"tOpS\x00\x00"              # top_speed_mark (signature)
+        header_data += struct.pack('>I', last_issued_row)  # last_issued_row (big-endian)
+        header_data += struct.pack('<I', change_count)     # change_count (little-endian)
+        header_data += struct.pack('<I', page_root_ref)    # page_root_ref (little-endian)
         
-        # Block references - need at least one block covering the file
-        # Calculate how many blocks we need based on file size
+        # Create block references
+        # Based on analysis: 60 blocks, each with start_ref and end_ref
+        block_references = b''
+        
+        # Calculate block size and number of blocks
         block_size = 0x10000  # 64KB blocks
-        num_blocks = max(1, (file_size + block_size - 1) // block_size)
+        num_blocks = 60  # Standard number from analysis
         
-        # Block references start at offset 0x20 in header
-        # Each block has start_ref and end_ref (4 bytes each)
         for i in range(num_blocks):
-            start_ref = i * (block_size // 0x100)  # Convert to page references
-            end_ref = min(start_ref + (block_size // 0x100) - 1, (file_size // 0x100) - 1)
-            header_data += struct.pack('<I', start_ref)  # block_start_ref
-            header_data += struct.pack('<I', end_ref)    # block_end_ref
+            if i == 0:
+                # First block: covers header area
+                start_ref = 0x00000000
+                end_ref = 0x00000000
+            elif i == 1:
+                # Second block: covers first data area
+                start_ref = 0x0000029C if file_type == "PHD" else 0x00000020
+                end_ref = 0x0000065E if file_type == "PHD" else 0x000000B4
+            else:
+                # Subsequent blocks: calculate based on file size
+                start_ref = i * 0x1000  # Rough calculation
+                end_ref = min(start_ref + 0x1000 - 1, (file_size // 0x100) - 1)
+            
+            block_references += struct.pack('<I', start_ref)  # block_start_ref
+            block_references += struct.pack('<I', end_ref)    # block_end_ref
         
-        # Pad to exactly 0x200 bytes
-        current_size = len(header_data)
-        if current_size < 0x200:
-            header_data += b'\x00' * (0x200 - current_size)
-        elif current_size > 0x200:
-            # Truncate if somehow too long
-            header_data = header_data[:0x200]
+        # Pad block references to exactly 480 bytes (0x1E0)
+        if len(block_references) < 0x1E0:
+            block_references += b'\x00' * (0x1E0 - len(block_references))
+        elif len(block_references) > 0x1E0:
+            block_references = block_references[:0x1E0]
+        
+        header_data += block_references
+        
+        # Ensure header is exactly 512 bytes
+        if len(header_data) != 0x200:
+            self.logger.warning(f"Header size mismatch: {len(header_data)} bytes, expected 512")
+            if len(header_data) < 0x200:
+                header_data += b'\x00' * (0x200 - len(header_data))
+            else:
+                header_data = header_data[:0x200]
         
         return header_data
+    
+    def _parse_header_info(self, header_data: bytes) -> Dict[str, Any]:
+        """Parse header information for validation"""
+        if len(header_data) < 0x200:
+            return {'error': 'Header too small'}
+        
+        try:
+            offset = struct.unpack('<I', header_data[0:4])[0]
+            size = struct.unpack('<H', header_data[4:6])[0]
+            file_size = struct.unpack('<I', header_data[6:10])[0]
+            allocated_file_size = struct.unpack('<I', header_data[10:14])[0]
+            top_speed_mark = header_data[14:20]
+            last_issued_row = struct.unpack('>I', header_data[20:24])[0]
+            change_count = struct.unpack('<I', header_data[24:28])[0]
+            page_root_ref = struct.unpack('<I', header_data[28:32])[0]
+            
+            return {
+                'offset': offset,
+                'size': size,
+                'file_size': file_size,
+                'allocated_file_size': allocated_file_size,
+                'top_speed_mark': top_speed_mark.hex(),
+                'last_issued_row': last_issued_row,
+                'change_count': change_count,
+                'page_root_ref': page_root_ref,
+                'valid_signature': top_speed_mark == b"tOpS\x00\x00"
+            }
+        except Exception as e:
+            return {'error': f'Header parsing failed: {e}'}
     
     def _get_table_schema(self, conn: sqlite3.Connection, table_name: str) -> List[Dict]:
         """Get table schema from SQLite"""
@@ -472,11 +465,9 @@ class ReverseConverter:
     
     def _write_table_name_record(self, f, table_name: str):
         """Write TABLE_NAME record to file"""
-        # Handle encoding issues by using latin-1 or replacing problematic characters
         try:
             name_bytes = table_name.encode('ascii')
         except UnicodeEncodeError:
-            # Replace non-ASCII characters with safe alternatives
             safe_name = table_name.encode('ascii', errors='replace').decode('ascii')
             name_bytes = safe_name.encode('ascii')
         
@@ -552,7 +543,6 @@ class ReverseConverter:
                     try:
                         text_bytes = str(value).encode('ascii')
                     except UnicodeEncodeError:
-                        # Replace non-ASCII characters with safe alternatives
                         safe_text = str(value).encode('ascii', errors='replace').decode('ascii')
                         text_bytes = safe_text.encode('ascii')
                     data += text_bytes
@@ -560,10 +550,24 @@ class ReverseConverter:
                 elif col['type'] == 'REAL':
                     data += struct.pack('<d', float(value))
                 elif col['type'] == 'BLOB':
-                    # Handle BLOB data
                     if isinstance(value, bytes):
                         data += value
                     else:
                         data += str(value).encode('ascii')
         
         return data
+    
+    def _update_file_header_size(self, file_path: str, actual_size: int):
+        """Update file header with actual file size."""
+        try:
+            with open(file_path, 'r+b') as f:
+                # Update file_size at offset 0x06
+                f.seek(0x06)
+                f.write(struct.pack('<I', actual_size))
+                
+                # Update allocated_file_size at offset 0x0A
+                f.seek(0x0A)
+                f.write(struct.pack('<I', actual_size))
+                
+        except Exception as e:
+            self.logger.warning(f"Failed to update header size: {e}")
