@@ -12,9 +12,13 @@ import logging
 # Add the src directory to the path so we can import our modules
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
+from construct import Container
+
 from pytopspeed import TPS
 from pytopspeed.tpstable import TABLE_DEFINITION_FIELD_STRUCT
 from converter.schema_mapper import TopSpeedToSQLiteMapper
+from converter.record_codec import RecordCodec
+from converter.topspeed_metadata import FileCapture, ensure_schema
 
 
 class SqliteConverter:
@@ -32,6 +36,8 @@ class SqliteConverter:
         self.progress_callback = progress_callback
         self.schema_mapper = TopSpeedToSQLiteMapper()
         self.logger = self._setup_logger()
+        # Raw records of the file being converted; set by convert()/convert_multiple()
+        self._capture: Optional[FileCapture] = None
         
     def _setup_logger(self) -> logging.Logger:
         """Setup logging for the converter"""
@@ -345,7 +351,14 @@ class SqliteConverter:
                     
                     # Analyze table structure for multidimensional arrays
                     table_name_str = str(table.name) if hasattr(table.name, '__str__') else table.name
-                    
+
+                    # Definitions pytopspeed parsed normally get the codec layout, which data
+                    # migration and reverse conversion share
+                    if self._capture is not None and isinstance(table_def, Container):
+                        sanitized_table_name = self._create_codec_table(cursor, table_name_str, table_def, file_prefix)
+                        table_mapping[table_name_str] = sanitized_table_name
+                        continue
+
                     try:
                         table_structure = self.schema_mapper.multidimensional_handler.analyze_table_structure(table_def)
                         # Table analysis completed
@@ -364,6 +377,9 @@ class SqliteConverter:
                     # Create table
                     cursor.execute(schema['create_table'])
                     self.logger.info(f"Created table: {sanitized_table_name}")
+                    if self._capture is not None:
+                        # No codec: reverse conversion copies this table's records back unchanged
+                        self._capture.register(table_name_str, sanitized_table_name)
                     
                     # Create indexes
                     for index_sql in schema['create_indexes']:
@@ -377,7 +393,78 @@ class SqliteConverter:
         conn.commit()
         self.logger.info("Schema creation completed")
         return table_mapping
-    
+
+    def _create_codec_table(self, cursor, table_name: str, table_def, file_prefix: str) -> str:
+        """Create a table (and its indexes) from the RecordCodec column layout"""
+        codec = RecordCodec(table_def)
+        sanitized_table_name = f"{file_prefix}{self.schema_mapper.sanitize_table_name(table_name)}"
+        columns = [f'"{c.name}" {c.sqlite_type}' for c in codec.columns] or ['"id" INTEGER']
+        cursor.execute(f'CREATE TABLE "{sanitized_table_name}" ({", ".join(columns)})')
+        self.logger.info(f"Created table: {sanitized_table_name}")
+
+        for index_def in table_def.indexes:
+            index_columns = codec.index_columns(index_def)
+            if not index_columns:
+                continue
+            index_name = f"{sanitized_table_name}_{self.schema_mapper.sanitize_field_name(str(index_def.name))}"
+            column_list = ", ".join(f'"{name}"' for name in index_columns)
+            cursor.execute(f'CREATE INDEX "{index_name}" ON "{sanitized_table_name}" ({column_list})')
+
+        self._capture.register(table_name, sanitized_table_name, codec)
+        return sanitized_table_name
+
+    def _migrate_codec_table(self, table_name: str, sanitized_table_name: str, conn: sqlite3.Connection) -> int:
+        """Decode each DATA record with the table's codec and insert it, remembering the source record"""
+        capture = self._capture
+        codec = capture.codecs[table_name]
+        table_number = capture.table_numbers[table_name]
+        cursor = conn.cursor()
+        try:
+            column_list = ", ".join(f'"{c.name}"' for c in codec.columns)
+            placeholders = ", ".join("?" for _ in codec.columns)
+            insert_sql = f'INSERT INTO "{sanitized_table_name}" (rowid, {column_list}) VALUES (?, {placeholders})'
+
+            batch = []
+            linked = []
+            row_id = 0
+            for record_number, payload in capture.rows.get(table_number, []):
+                row_id += 1
+                values = codec.decode(payload, capture.memos.get((table_number, record_number)))
+                batch.append((row_id,) + values)
+                linked.append((row_id, record_number, payload))
+                if len(batch) >= self.batch_size:
+                    cursor.executemany(insert_sql, batch)
+                    self._update_progress(row_id, 0, f"Migrated {row_id} records from {table_name}")
+                    batch = []
+            if batch:
+                cursor.executemany(insert_sql, batch)
+            capture.store_rows(conn, table_name, linked)
+            conn.commit()
+            self.logger.info(f"Migrated {row_id} records from {table_name}")
+            return row_id
+        except Exception as e:
+            self.logger.error(f"Error migrating data for table {table_name}: {e}")
+            conn.rollback()
+            return 0
+
+    def _begin_file(self, tps: TPS, conn: sqlite3.Connection, file_prefix: str, source_file: str):
+        """Index the file's raw records and prepare the reverse-conversion metadata tables"""
+        try:
+            capture = FileCapture(tps, file_prefix, source_file)
+        except Exception as e:
+            # Conversion still works without it; only reverse conversion needs this metadata
+            self.logger.warning(f"Reverse-conversion metadata unavailable for {source_file}: {e}")
+            self._capture = None
+            return
+        ensure_schema(conn)
+        self._capture = capture
+
+    def _finish_file(self, conn: sqlite3.Connection):
+        if self._capture is not None:
+            self._capture.finish(conn)
+            conn.commit()
+            self._capture = None
+
     def _migrate_table_data(self, tps: TPS, table_name: str, sanitized_table_name: str, 
                            conn: sqlite3.Connection) -> int:
         """
@@ -392,8 +479,11 @@ class SqliteConverter:
         Returns:
             Number of records migrated
         """
+        if self._capture is not None and table_name in self._capture.codecs:
+            return self._migrate_codec_table(table_name, sanitized_table_name, conn)
+
         cursor = conn.cursor()
-        
+
         try:
             # Set current table
             tps.set_current_table(table_name)
@@ -886,24 +976,28 @@ class SqliteConverter:
             conn.execute("PRAGMA synchronous=NORMAL")  # Balance between safety and speed
             
             try:
+                self._begin_file(tps, conn, "", phd_file)
+
                 # Create schema
                 table_mapping = self._create_schema(tps, conn)
                 results['tables_created'] = len(table_mapping)
-                
+
                 # Migrate data
                 self.logger.info("Starting data migration...")
                 total_tables = len(table_mapping)
-                
+
                 for i, (table_name, sanitized_table_name) in enumerate(table_mapping.items()):
                     self._update_progress(i, total_tables, f"Migrating table: {table_name}")
-                    
+
                     record_count = self._migrate_table_data(tps, table_name, sanitized_table_name, conn)
                     results['total_records'] += record_count
-                
+
+                self._finish_file(conn)
                 results['success'] = True
                 self.logger.info("Conversion completed successfully")
-                
+
             finally:
+                self._capture = None
                 conn.close()
                 
         except Exception as e:
@@ -2999,6 +3093,7 @@ class SqliteConverter:
             
             try:
                 all_table_mapping = {}
+                used_prefixes = set()
                 total_tables_processed = 0
                 
                 # Process each input file
@@ -3026,7 +3121,13 @@ class SqliteConverter:
                             file_prefix = "tps_"
                         else:
                             file_prefix = f"file_{file_idx + 1}_"
-                        
+                        # Two files of the same type need distinct prefixes
+                        if file_prefix in used_prefixes:
+                            file_prefix = f"{file_prefix[:-1]}{file_idx + 1}_"
+                        used_prefixes.add(file_prefix)
+
+                        self._begin_file(tps, conn, file_prefix, input_file)
+
                         # Create schema for this file with proper prefixing
                         file_table_mapping = self._create_schema(tps, conn, file_prefix=file_prefix)
                         
@@ -3049,7 +3150,9 @@ class SqliteConverter:
                         for table_name, sanitized_table_name in file_table_mapping.items():
                             record_count = self._migrate_table_data(tps, table_name, sanitized_table_name, conn)
                             file_record_count += record_count
-                        
+
+                        self._finish_file(conn)
+
                         # Store file results
                         results['file_results'][input_file] = {
                             'tables_created': len(file_table_mapping),
@@ -3064,6 +3167,7 @@ class SqliteConverter:
                         self.logger.info(f"Completed {input_file}: {len(file_table_mapping)} tables, {file_record_count} records")
                         
                     except Exception as e:
+                        self._capture = None
                         error_msg = f"Error processing {input_file}: {e}"
                         self.logger.error(error_msg)
                         results['errors'].append(error_msg)

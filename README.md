@@ -65,7 +65,7 @@ result = converter.convert_phz('input.phz', 'output.sqlite')
 ```
 
 ### Reverse Conversion (SQLite to TopSpeed)
-Use `ReverseConverter` to convert SQLite databases back to TopSpeed files:
+Use `ReverseConverter` to turn a converted database (including any edits) back into the original TopSpeed file(s):
 
 ```python
 from converter.reverse_converter import ReverseConverter
@@ -73,6 +73,13 @@ from converter.reverse_converter import ReverseConverter
 converter = ReverseConverter()
 result = converter.convert_sqlite_to_topspeed('input.sqlite', 'output_directory/')
 ```
+
+How it works:
+- The forward conversion keeps what SQLite can't hold (table definitions, table numbers, file-level records and the original bytes of every row) in hidden `_topspeed_*` tables. Reverse conversion needs them, so it only works on databases created by this version.
+- Rows you didn't change are written back byte for byte. Edited rows keep their record number and only the changed columns are re-encoded. Inserted rows get new record numbers; deleted rows and their memos are dropped.
+- Index entries and record counts are rebuilt from the final rows. A change that would put two rows on the same unique key is rejected with an error naming the table and key.
+- Output files keep their original names (e.g. `TxWells.PHD`, `TxWells.mod`). A database made from a `.phz` produces both files; zip them yourself if you need a `.phz` again.
+- Rows are linked to their source records by SQLite `rowid`. If rowids change (`VACUUM` after deletes, or dropping and recreating a table), unchanged rows are still matched by content, but edited rows are written as new records with new record numbers.
 
 ## 🔄 Multidimensional Array Handling
 
@@ -102,7 +109,8 @@ PROD3        # JSON: [2.1, 1.8, 0.0, null, ...]
 ### Data Type Preservation
 
 - **Zero vs NULL**: Distinguishes between actual zero values (`0.0`) and missing data (`null`)
-- **Boolean Arrays**: Converts `BYTE` arrays to proper boolean values (`true`/`false`)
+- **Byte Arrays**: `BYTE` arrays hold their numeric values (`[0, 1, 13]`); flags read as `0`/`1`
+- **GROUP Arrays**: Members of a dimensioned `GROUP` (e.g. `FORCAST` `NUMFORM` → `VALUETYPE`, `PCODE`, `ACTION`, ...) each become a JSON array with one element per group entry
 - **Numeric Arrays**: Preserves `DOUBLE`, `LONG`, `SHORT` precision
 - **String Arrays**: Maintains text encoding and length
 

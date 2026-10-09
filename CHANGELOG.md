@@ -7,7 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Working reverse conversion**: `ReverseConverter` rebuilds the original TopSpeed file(s) from a converted
+  database, including edits. Unchanged rows are written back byte for byte, edited rows keep their record
+  numbers, inserted/deleted rows are handled, and index entries and record counts are regenerated. Verified
+  against the TxWells sample: an unedited round trip reproduces every record of the original files.
+- **TopSpeed writer** (`pytopspeed.tpswriter`): builds files from raw records (prefix- and RLE-compressed
+  pages, B-tree control pages with separator keys, file header), plus index-key, data, memo and metadata
+  record builders.
+- **Record codec** (`converter.record_codec`): one column layout and decode/encode path shared by schema
+  creation, data migration and reverse conversion.
+- Forward conversion stores reverse-conversion metadata in `_topspeed_*` tables.
+
+### Changed
+- Tables with a parseable definition are converted through the record codec:
+  - Members of a dimensioned `GROUP` become JSON arrays (e.g. FORCAST `VALUETYPE`, `PCODE`, `ACTION` now hold
+    all 100 entries); the `GROUP` itself no longer gets a column.
+  - `BYTE` values, including arrays, are stored as integers instead of `true`/`false` (booleans lost values such
+    as `ACTION = 13`).
+  - Strings are trimmed on the right only; empty strings are stored as `''` rather than `NULL`.
+  - `DATE`/`TIME` fields are stored as `YYYY-MM-DD` / `HH:MM:SS.cc` text (previously always `NULL`).
+  - Memos hold their full text (previously only the first 256-byte chunk).
+  - Columns follow the definition's field order.
+- Converted databases are larger because they keep each row's original bytes for reverse conversion.
+- `convert_multiple` gives two files of the same type distinct table prefixes.
+- Removed the non-functional `improved_reverse_converter.py`.
+
 ### Fixed
+- **Table definitions read in the wrong order**: definition portions were joined in page order instead of
+  portion order, so FORCAST, FLUIDS and GRAPHS failed to parse and fell back to guessed field names. About 40%
+  of FORCAST's cells disagreed with the reference export; they now match.
 - **Silent data loss in tables with numbered fields**: Schema creation and data migration used different
   array analyses, so INSERTs failed against tables like MODSEGMENT, LSESEGMENT, CUMVOL and TITLES and they
   were left empty. Migration now uses the same `MultidimensionalHandler` analysis as the schema.

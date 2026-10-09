@@ -136,9 +136,9 @@ class TpsTable:
         self.statistics[statistics_struct.metadata_type] = statistics_struct
 
     def get_definition(self):
-        definition_bytes = b''
-        for value in self.definition_bytes.values():
-            definition_bytes += value
+        # Portions are collected in page order, which need not match portion order
+        definition_bytes = b''.join(self.definition_bytes[portion]
+                                    for portion in sorted(self.definition_bytes))
         self.definition = TABLE_DEFINITION_STRUCT.parse(definition_bytes)
         return self.definition
 

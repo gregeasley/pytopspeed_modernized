@@ -2,568 +2,345 @@
 """
 Reverse Converter - Convert SQLite databases back to TopSpeed files
 
-This module provides functionality to convert SQLite databases back to
-TopSpeed .phd and .mod files, reconstructing the binary format.
+Rebuilds the original TopSpeed file(s) from a database created by SqliteConverter or
+PhzConverter. The forward conversion stores what SQLite can't represent (table
+definitions, table numbers, file-level records and the original bytes of every row)
+in ``_topspeed_*`` tables; this converter combines that with the current table
+contents:
+
+- rows nobody changed are written back byte for byte
+- edited rows keep their record number; only the changed columns are re-encoded
+- new rows get new record numbers; deleted rows (and their memos) are dropped
+- index entries and record counts are regenerated from the resulting rows
 """
 
+import logging
 import os
 import sqlite3
 import struct
-import logging
+import sys
+from collections import defaultdict
 from datetime import datetime
-from typing import Dict, Any, List, Tuple, Optional
-from pathlib import Path
+from typing import Any, Dict, List, Tuple
 
-from construct import (
-    Array, Byte, Bytes, Const, Float32l, Float64l, Struct,
-    Int16sl, Int32sl, Int32ub, Int8ul, Int16ul, Int32ul,
-    CString, PaddedString, Enum, BitsInteger, BitStruct, Flag, Padding, If
-)
+# Add the src directory to the path so we can import our modules
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
+from pytopspeed.tpstable import TABLE_DEFINITION_STRUCT
+from pytopspeed.tpswriter import (DATA_TYPE, METADATA_TYPE, TABLE_DEFINITION_TYPE, VERIFIED_KEY_TYPES,
+                                  build_tps, data_record, index_records, memo_records, metadata_record)
+from converter.record_codec import RecordCodec, memo_chunks
+from converter.topspeed_metadata import table_number_of
+
+
+class ReverseConversionError(Exception):
+    """The database can't be turned back into a valid TopSpeed file"""
 
 
 class ReverseConverter:
     """
     Converter for creating TopSpeed files from SQLite databases
     """
-    
+
     def __init__(self, progress_callback=None):
         """
         Initialize reverse converter
-        
+
         Args:
             progress_callback: Optional callback function for progress updates
         """
         self.progress_callback = progress_callback
         self.logger = logging.getLogger(__name__)
-        
-        # TopSpeed file structures
-        self._init_construct_structures()
-    
-    def _init_construct_structures(self):
-        """Initialize construct structures for TopSpeed file format"""
-        
-        # Field types
-        self.FIELD_TYPE_STRUCT = Enum(Byte,
-            BYTE=1,
-            SHORT=2,
-            DATE=3,
-            TIME=4,
-            LONG=5,
-            STRING=6,
-            DECIMAL=7,
-            MEMO=8,
-            BLOB=9,
-            CSTRING=10,
-            PSTRING=11,
-            PICTURE=12,
-            _default_='STRING'
-        )
-        
-        # Table definition structures
-        self.TABLE_DEFINITION_FIELD_STRUCT = Struct(
-            "type" / self.FIELD_TYPE_STRUCT,
-            "offset" / Int16ul,
-            "name" / CString("ascii"),
-            "array_element_count" / Int16ul,
-            "size" / Int16ul,
-            "overlaps" / Int16ul,
-            "number" / Int16ul,
-            "array_element_size" / If(lambda x: x['type'] in ['STRING', 'CSTRING', 'PSTRING', 'PICTURE'], Int16ul),
-            "template" / If(lambda x: x['type'] in ['STRING', 'CSTRING', 'PSTRING', 'PICTURE'], Int16ul),
-            "decimal_count" / If(lambda x: x['type'] == 'DECIMAL', Byte),
-            "decimal_size" / If(lambda x: x['type'] == 'DECIMAL', Byte),
-        )
-        
-        # Index structures
-        self.INDEX_TYPE_STRUCT = Enum(BitsInteger(2),
-            INDEX=1,
-            DYNAMIC_INDEX=2
-        )
-        
-        self.INDEX_FIELD_ORDER_TYPE_STRUCT = Enum(Int16ul,
-            ASCENDING=0,
-            DESCENDING=1,
-            _default_='DESCENDING'
-        )
-        
-        self.TABLE_DEFINITION_INDEX_STRUCT = Struct(
-            "external_filename" / CString("ascii"),
-            "index_mark" / If(lambda x: len(x['external_filename']) == 0, Const(1, Byte)),
-            "name" / CString("ascii"),
-            "flags" / BitStruct(
-                Padding(1),
-                "type" / self.INDEX_TYPE_STRUCT,
-                Padding(2),
-                "NOCASE" / Flag,
-                "OPT" / Flag,
-                "DUP" / Flag
-            ),
-            "field_count" / Int16ul,
-            "fields" / Array(lambda x: x['field_count'],
-                Struct(
-                    "field_number" / Int16ul,
-                    "order_type" / self.INDEX_FIELD_ORDER_TYPE_STRUCT
-                )
-            )
-        )
-        
-        # Memo structures
-        self.MEMO_TYPE_STRUCT = Enum(Flag,
-            BLOB=1
-        )
-        
-        self.TABLE_DEFINITION_MEMO_STRUCT = Struct(
-            "external_filename" / CString("ascii"),
-            "memo_mark" / If(lambda x: len(x['external_filename']) == 0, Const(1, Byte)),
-            "name" / CString("ascii"),
-            "size" / Int16ul,
-            "flags" / BitStruct(
-                Padding(5),
-                "memo_type" / self.MEMO_TYPE_STRUCT,
-                "BINARY" / Flag,
-                "Flag" / Flag,
-                Padding(8)
-            )
-        )
-        
-        # Complete table definition
-        self.TABLE_DEFINITION_STRUCT = Struct(
-            "min_version_driver" / Int16ul,
-            "record_size" / Int16ul,
-            "field_count" / Int16ul,
-            "memo_count" / Int16ul,
-            "index_count" / Int16ul,
-            "fields" / Array(lambda x: x['field_count'], self.TABLE_DEFINITION_FIELD_STRUCT),
-            "memos" / Array(lambda x: x['memo_count'], self.TABLE_DEFINITION_MEMO_STRUCT),
-            "indexes" / Array(lambda x: x['index_count'], self.TABLE_DEFINITION_INDEX_STRUCT)
-        )
-        
-        # Record structures
-        self.RECORD_TYPE = Enum(Byte,
-            NULL=None,
-            DATA=0xF3,
-            METADATA=0xF6,
-            TABLE_DEFINITION=0xFA,
-            TABLE_NAME=0xFE,
-            MEMO=0xFC,
-            _default_='INDEX'
-        )
-        
-        self.DATA_RECORD_DATA = Struct(
-            "record_number" / Int32ub,
-            "data" / Bytes(lambda ctx: ctx._.data_size - 9)
-        )
-        
-        self.TABLE_DEFINITION_RECORD_DATA = Struct(
-            "table_definition_bytes" / Bytes(lambda ctx: ctx._.data_size - 5)
-        )
-        
-        # Page header structure
-        self.PAGE_HEADER_STRUCT = Struct(
-            "offset" / Int32ul,
-            "size" / Int16ul,
-            "uncompressed_size" / Int16ul,
-            "uncompressed_unabridged_size" / Int16ul,
-            "record_count" / Int16ul,
-            "hierarchy_level" / Byte
-        )
-        
-        # File header structure
-        self.FILE_HEADER_STRUCT = Struct(
-            "offset" / Int32ul,
-            "size" / Int16ul,
-            "file_size" / Int32ul,
-            "allocated_file_size" / Int32ul,
-            "top_speed_mark" / Const(b"tOpS\x00\x00"),
-            "last_issued_row" / Int32ub,
-            "change_count" / Int32ul,
-            "page_root_ref" / Int32ul,
-            "block_start_ref" / Array(lambda ctx: (ctx["size"] - 0x20) // 2 // 4, Int32ul),
-            "block_end_ref" / Array(lambda ctx: (ctx["size"] - 0x20) // 2 // 4, Int32ul)
-        )
-    
+
     def convert_sqlite_to_topspeed(self, sqlite_file: str, output_dir: str) -> Dict[str, Any]:
         """
         Convert SQLite database back to TopSpeed files
-        
+
         Args:
-            sqlite_file: Path to input SQLite file
-            output_dir: Directory to write output files
-            
+            sqlite_file: Path to a SQLite file created by SqliteConverter or PhzConverter
+            output_dir: Directory to write output files (named after the original files)
+
         Returns:
             Dictionary with conversion results
         """
         start_time = datetime.now()
-        results = {
+        results: Dict[str, Any] = {
             'success': False,
             'files_created': [],
             'tables_processed': 0,
             'records_processed': 0,
             'duration': 0,
-            'errors': []
+            'errors': [],
+            'warnings': [],
         }
-        
+
         try:
-            # Check if input file exists
             if not os.path.exists(sqlite_file):
-                error_msg = f"SQLite file not found: {sqlite_file}"
-                self.logger.error(error_msg)
-                results['errors'].append(error_msg)
-                return results
-            
-            self.logger.info(f"Starting reverse conversion: {sqlite_file} -> {output_dir}")
-            
-            # Create output directory
-            os.makedirs(output_dir, exist_ok=True)
-            
-            # Connect to SQLite database
+                raise ReverseConversionError(f"SQLite file not found: {sqlite_file}")
+
             conn = sqlite3.connect(sqlite_file)
-            cursor = conn.cursor()
-            
-            # Get all tables and categorize by prefix
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-            all_tables = [row[0] for row in cursor.fetchall()]
-            
-            phd_tables = [t for t in all_tables if t.startswith('phd_')]
-            mod_tables = [t for t in all_tables if t.startswith('mod_')]
-            
-            # If no prefixed tables found, treat all tables as PHD tables (single file conversion)
-            if not phd_tables and not mod_tables and all_tables:
-                phd_tables = all_tables
-                self.logger.info(f"No prefixed tables found, treating all {len(all_tables)} tables as PHD tables")
-            else:
-                self.logger.info(f"Found {len(phd_tables)} PHD tables, {len(mod_tables)} MOD tables")
-            
-            # Process PHD file if we have PHD tables
-            if phd_tables:
-                phd_file = os.path.join(output_dir, "TxWells.PHD")
-                phd_result = self._create_topspeed_file(
-                    conn, phd_tables, phd_file, "PHD"
-                )
-                if phd_result['success']:
-                    results['files_created'].append(phd_file)
-                    results['tables_processed'] += phd_result['tables_processed']
-                    results['records_processed'] += phd_result['records_processed']
-                else:
-                    results['errors'].extend(phd_result['errors'])
-            
-            # Process MOD file if we have MOD tables
-            if mod_tables:
-                mod_file = os.path.join(output_dir, "TxWells.mod")
-                mod_result = self._create_topspeed_file(
-                    conn, mod_tables, mod_file, "MOD"
-                )
-                if mod_result['success']:
-                    results['files_created'].append(mod_file)
-                    results['tables_processed'] += mod_result['tables_processed']
-                    results['records_processed'] += mod_result['records_processed']
-                else:
-                    results['errors'].extend(mod_result['errors'])
-            
-            conn.close()
-            
-            results['success'] = len(results['files_created']) > 0
-            self.logger.info(f"Reverse conversion completed: {results['success']}")
-            
+            try:
+                files = self._source_files(conn)
+                os.makedirs(output_dir, exist_ok=True)
+                for file_prefix, source_file, last_issued_row, change_count, encoding in files:
+                    output_file = os.path.join(output_dir, source_file)
+                    self.logger.info(f"Rebuilding {source_file}")
+                    try:
+                        blob, stats = self._rebuild_file(conn, file_prefix, last_issued_row, change_count, encoding)
+                    except ReverseConversionError as e:
+                        results['errors'].append(f"{source_file}: {e}")
+                        continue
+                    with open(output_file, 'wb') as f:
+                        f.write(blob)
+                    results['files_created'].append(output_file)
+                    results['tables_processed'] += stats['tables']
+                    results['records_processed'] += stats['rows']
+                    results['warnings'].extend(f"{source_file}: {w}" for w in stats['warnings'])
+            finally:
+                conn.close()
+
+            results['success'] = bool(results['files_created']) and not results['errors']
+            for warning in results['warnings']:
+                self.logger.warning(warning)
+
+        except ReverseConversionError as e:
+            results['errors'].append(str(e))
         except Exception as e:
             self.logger.error(f"Reverse conversion failed: {e}")
             results['errors'].append(str(e))
-        
+
         finally:
-            end_time = datetime.now()
-            results['duration'] = (end_time - start_time).total_seconds()
-            
+            results['duration'] = (datetime.now() - start_time).total_seconds()
+
         return results
-    
-    def _create_topspeed_file(self, conn: sqlite3.Connection, tables: List[str], 
-                            output_file: str, file_type: str) -> Dict[str, Any]:
-        """
-        Create a TopSpeed file from SQLite tables
-        
-        Args:
-            conn: SQLite connection
-            tables: List of table names to include
-            output_file: Output file path
-            file_type: Type of file (PHD or MOD)
-            
-        Returns:
-            Dictionary with conversion results
-        """
-        results = {
-            'success': False,
-            'tables_processed': 0,
-            'records_processed': 0,
-            'errors': []
-        }
-        
+
+    def _source_files(self, conn) -> List[Tuple]:
+        exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='_topspeed_file'").fetchone()
+        if not exists:
+            raise ReverseConversionError(
+                "This database has no TopSpeed metadata (_topspeed_* tables). Convert the original "
+                "TopSpeed file again with this version, make your changes in that database, then reverse it.")
+        return conn.execute('SELECT file_prefix, source_file, last_issued_row, change_count, encoding '
+                            'FROM _topspeed_file ORDER BY file_prefix').fetchall()
+
+    def _rebuild_file(self, conn, file_prefix: str, last_issued_row: int, change_count: int,
+                      encoding: str) -> Tuple[bytes, Dict[str, Any]]:
+        stats: Dict[str, Any] = {'tables': 0, 'rows': 0, 'warnings': []}
+        verbatim = conn.execute('SELECT header_size, record FROM _topspeed_record WHERE file_prefix = ?',
+                                (file_prefix,)).fetchall()
+        tables = conn.execute('SELECT table_number, table_name, sqlite_table, uses_codec FROM _topspeed_table '
+                              'WHERE file_prefix = ? ORDER BY table_number', (file_prefix,)).fetchall()
+        definitions = self._definitions(verbatim)
+        codec_numbers = {number for number, _, _, uses_codec in tables if uses_codec}
+
+        # Metadata of codec tables is regenerated below; keep which types existed and their access stamps
+        metadata = defaultdict(dict)
+        records = []
+        for header_size, record in verbatim:
+            number = table_number_of(record)
+            if number in codec_numbers and record[4] == METADATA_TYPE:
+                metadata[number][record[5]] = struct.unpack('<I', record[10:14])[0]
+                continue
+            records.append((header_size, bytes(record)))
+
+        next_record_number = last_issued_row
+        for i, (table_number, table_name, sqlite_table, uses_codec) in enumerate(tables):
+            if self.progress_callback:
+                self.progress_callback(i, len(tables), f"Rebuilding table: {table_name}")
+            if not uses_codec:
+                self._check_untracked_table(conn, sqlite_table, table_name, table_number, verbatim, stats)
+                continue
+            definition = definitions.get(table_number)
+            if definition is None:
+                raise ReverseConversionError(f"table {table_name}: definition record missing")
+            table_records, row_count, next_record_number = self._table_records(
+                conn, file_prefix, table_number, table_name, sqlite_table, definition, encoding,
+                next_record_number, metadata[table_number], stats)
+            records.extend(table_records)
+            stats['tables'] += 1
+            stats['rows'] += row_count
+
         try:
-            self.logger.info(f"Creating {file_type} file: {output_file}")
-            
-            # Create file with basic structure
-            with open(output_file, 'wb') as f:
-                # Write file header with proper size estimation
-                estimated_size = 0x200 + (len(tables) * 0x1000)  # Header + rough table estimate
-                header_data = self._create_file_header(len(tables), estimated_size)
-                f.write(header_data)
-                
-                # Write table definitions and data
-                for table_name in tables:
-                    self.logger.info(f"Processing table: {table_name}")
-                    
-                    # Remove prefix to get original table name
-                    original_name = table_name[4:]  # Remove 'phd_' or 'mod_' prefix
-                    
-                    # Get table schema from SQLite
-                    table_schema = self._get_table_schema(conn, table_name)
-                    
-                    # Create table definition
-                    table_def = self._create_table_definition(original_name, table_schema)
-                    
-                    # Write table name record
-                    self._write_table_name_record(f, original_name)
-                    
-                    # Write table definition record
-                    self._write_table_definition_record(f, table_def)
-                    
-                    # Write data records
-                    record_count = self._write_data_records(conn, f, table_name, table_schema)
-                    
-                    results['tables_processed'] += 1
-                    results['records_processed'] += record_count
-                    
-                    self.logger.info(f"Processed {record_count} records from {table_name}")
-            
-            results['success'] = True
-            self.logger.info(f"Successfully created {file_type} file with {results['tables_processed']} tables")
-            
-        except Exception as e:
-            self.logger.error(f"Error creating {file_type} file: {e}")
-            results['errors'].append(str(e))
-        
-        return results
-    
-    def _create_file_header(self, table_count: int, file_size: int = 0x10000) -> bytes:
-        """Create TopSpeed file header matching the exact format expected by pytopspeed"""
-        # TopSpeed header structure (from pytopspeed/tps.py):
-        # offset (4 bytes) + size (2 bytes) + file_size (4 bytes) + allocated_file_size (4 bytes)
-        # + top_speed_mark (6 bytes) + last_issued_row (4 bytes) + change_count (4 bytes) 
-        # + page_root_ref (4 bytes) + block references
-        
-        header_data = struct.pack('<I', 0x200)  # offset - header starts at 0x200
-        header_data += struct.pack('<H', 0x200)  # size - header is 0x200 bytes
-        header_data += struct.pack('<I', file_size)  # file_size
-        header_data += struct.pack('<I', file_size)  # allocated_file_size (same as file_size)
-        header_data += b"tOpS\x00\x00"  # top_speed_mark - exact signature
-        header_data += struct.pack('>I', 1)  # last_issued_row (big-endian)
-        header_data += struct.pack('<I', 1)  # change_count
-        header_data += struct.pack('<I', 1)  # page_root_ref - first page after header
-        
-        # Block references - need at least one block covering the file
-        # Calculate how many blocks we need based on file size
-        block_size = 0x10000  # 64KB blocks
-        num_blocks = max(1, (file_size + block_size - 1) // block_size)
-        
-        # Block references start at offset 0x20 in header
-        # Each block has start_ref and end_ref (4 bytes each)
-        for i in range(num_blocks):
-            start_ref = i * (block_size // 0x100)  # Convert to page references
-            end_ref = min(start_ref + (block_size // 0x100) - 1, (file_size // 0x100) - 1)
-            header_data += struct.pack('<I', start_ref)  # block_start_ref
-            header_data += struct.pack('<I', end_ref)    # block_end_ref
-        
-        # Pad to exactly 0x200 bytes
-        current_size = len(header_data)
-        if current_size < 0x200:
-            header_data += b'\x00' * (0x200 - current_size)
-        elif current_size > 0x200:
-            # Truncate if somehow too long
-            header_data = header_data[:0x200]
-        
-        return header_data
-    
-    def _get_table_schema(self, conn: sqlite3.Connection, table_name: str) -> List[Dict]:
-        """Get table schema from SQLite"""
-        cursor = conn.cursor()
-        cursor.execute(f"PRAGMA table_info([{table_name}])")
-        columns = cursor.fetchall()
-        
-        schema = []
-        for col in columns:
-            schema.append({
-                'name': col[1],
-                'type': col[2],
-                'not_null': bool(col[3]),
-                'default_value': col[4],
-                'primary_key': bool(col[5])
-            })
-        
-        return schema
-    
-    def _create_table_definition(self, table_name: str, schema: List[Dict]) -> Dict:
-        """Create TopSpeed table definition from SQLite schema"""
-        
-        # Map SQLite types to TopSpeed types
-        type_mapping = {
-            'INTEGER': 'LONG',
-            'TEXT': 'STRING',
-            'REAL': 'DECIMAL',
-            'BLOB': 'BLOB',
-            'DATE': 'DATE',
-            'TIME': 'TIME'
-        }
-        
-        fields = []
-        memos = []
-        indexes = []
-        
-        offset = 0
-        field_number = 0
-        
-        for col in schema:
-            field_type = type_mapping.get(col['type'], 'STRING')
-            
-            # Calculate field size
-            if field_type == 'LONG':
-                size = 4
-            elif field_type == 'STRING':
-                size = 255  # Default string size
-            elif field_type == 'DECIMAL':
-                size = 8
-            elif field_type == 'BLOB':
-                size = 0  # Memo field
-            else:
-                size = 4
-            
-            if field_type == 'BLOB':
-                # Create memo field
-                memos.append({
-                    'name': col['name'],
-                    'size': 0,
-                    'memo_type': 1,  # BLOB
-                    'external_filename': '',
-                    'flags': 0
-                })
-            else:
-                # Create regular field
-                fields.append({
-                    'type': field_type,
-                    'offset': offset,
-                    'name': col['name'],
-                    'array_element_count': 1,
-                    'size': size,
-                    'overlaps': 0,
-                    'number': field_number,
-                    'array_element_size': size if field_type in ['STRING', 'CSTRING'] else 0,
-                    'template': 0
-                })
-                offset += size
-                field_number += 1
-        
-        return {
-            'min_version_driver': 0,
-            'record_size': offset,
-            'field_count': len(fields),
-            'memo_count': len(memos),
-            'index_count': len(indexes),
-            'fields': fields,
-            'memos': memos,
-            'indexes': indexes
-        }
-    
-    def _write_table_name_record(self, f, table_name: str):
-        """Write TABLE_NAME record to file"""
-        # Handle encoding issues by using latin-1 or replacing problematic characters
-        try:
-            name_bytes = table_name.encode('ascii')
-        except UnicodeEncodeError:
-            # Replace non-ASCII characters with safe alternatives
-            safe_name = table_name.encode('ascii', errors='replace').decode('ascii')
-            name_bytes = safe_name.encode('ascii')
-        
-        data_size = 9 + len(name_bytes)
-        
-        # Record header
-        f.write(struct.pack('<H', data_size))  # data_size
-        f.write(struct.pack('<I', 0))  # table_number (placeholder)
-        f.write(b'\xFE')  # TABLE_NAME record type
-        
-        # Record data
-        f.write(name_bytes)
-        f.write(b'\x00' * (data_size - 9 - len(name_bytes)))  # padding
-    
-    def _write_table_definition_record(self, f, table_def: Dict):
-        """Write TABLE_DEFINITION record to file"""
-        # This is a simplified implementation
-        # In a full implementation, we would serialize the complete table definition
-        
-        data_size = 100  # Placeholder size
-        f.write(struct.pack('<H', data_size))  # data_size
-        f.write(struct.pack('<I', 0))  # table_number (placeholder)
-        f.write(b'\xFA')  # TABLE_DEFINITION record type
-        
-        # Placeholder table definition data
-        f.write(b'\x00' * (data_size - 5))
-    
-    def _write_data_records(self, conn: sqlite3.Connection, f, table_name: str, 
-                          schema: List[Dict]) -> int:
-        """Write data records to file"""
-        cursor = conn.cursor()
-        cursor.execute(f"SELECT * FROM [{table_name}]")
-        rows = cursor.fetchall()
-        
-        record_count = 0
-        for row in rows:
-            # Convert row data to binary format
-            record_data = self._convert_row_to_binary(row, schema)
-            
-            # Write record header
-            data_size = 9 + len(record_data)
-            f.write(struct.pack('<H', data_size))  # data_size
-            f.write(struct.pack('<I', record_count + 1))  # record_number
-            f.write(b'\xF3')  # DATA record type
-            
-            # Write record data
-            f.write(record_data)
-            
-            record_count += 1
-        
-        return record_count
-    
-    def _convert_row_to_binary(self, row: Tuple, schema: List[Dict]) -> bytes:
-        """Convert SQLite row to binary format"""
-        data = b''
-        
-        for i, (col, value) in enumerate(zip(schema, row)):
-            if value is None:
-                # Handle NULL values
-                if col['type'] == 'INTEGER':
-                    data += struct.pack('<i', 0)
-                elif col['type'] == 'TEXT':
-                    data += b'\x00' * 255  # Null string
-                elif col['type'] == 'REAL':
-                    data += struct.pack('<d', 0.0)
+            blob = build_tps(records, last_issued_row=next_record_number, change_count=change_count + 1)
+        except ValueError as e:
+            raise ReverseConversionError(str(e)) from e
+        return blob, stats
+
+    @staticmethod
+    def _definitions(verbatim) -> Dict[int, Any]:
+        portions = defaultdict(dict)
+        for header_size, record in verbatim:
+            number = table_number_of(record)
+            if number is not None and record[4] == TABLE_DEFINITION_TYPE:
+                portions[number][struct.unpack('<H', record[5:7])[0]] = bytes(record[7:])
+        return {number: TABLE_DEFINITION_STRUCT.parse(b''.join(parts[k] for k in sorted(parts)))
+                for number, parts in portions.items()}
+
+    def _table_records(self, conn, file_prefix, table_number, table_name, sqlite_table, definition, encoding,
+                       next_record_number, metadata, stats):
+        codec = RecordCodec(definition, encoding=encoding)
+        names = [c.name for c in codec.columns]
+
+        current = []
+        if sqlite_table and self._table_exists(conn, sqlite_table):
+            present = {row[1].upper() for row in conn.execute(f'PRAGMA table_info("{sqlite_table}")')}
+            missing = [n for n in names if n.upper() not in present]
+            if missing:
+                raise ReverseConversionError(f"table {sqlite_table} is missing columns {missing}")
+            column_list = ", ".join(f'"{n}"' for n in names)
+            current = conn.execute(f'SELECT rowid, {column_list} FROM "{sqlite_table}" ORDER BY rowid').fetchall()
+        else:
+            stats['warnings'].append(f"table {sqlite_table or table_name} not found; writing it with no rows")
+
+        originals = {row_id: (record_number, bytes(payload)) for row_id, record_number, payload in conn.execute(
+            'SELECT row_id, record_number, payload FROM _topspeed_row WHERE file_prefix = ? AND table_number = ?',
+            (file_prefix, table_number))}
+        memos = defaultdict(dict)
+        for record_number, memo_index, data in conn.execute(
+                'SELECT record_number, memo_index, data FROM _topspeed_memo WHERE file_prefix = ? AND table_number = ?',
+                (file_prefix, table_number)):
+            memos[record_number][memo_index] = bytes(data)
+
+        plan, next_record_number, changed = self._match_rows(codec, current, originals, memos, next_record_number)
+        if changed:
+            self._warn_unverified_keys(definition, table_name, stats)
+
+        records = []
+        index_counts = defaultdict(int)
+        unique_keys = {}  # unique index key -> record number holding it
+        for values, record_number, template, changed_columns, original_memos in plan:
+            try:
+                if template is None or changed_columns:
+                    payload = codec.encode(values, template=template,
+                                           columns=None if template is None else changed_columns)
                 else:
-                    data += b'\x00' * 4
+                    payload = template
+            except ValueError as e:
+                raise ReverseConversionError(f"table {sqlite_table}, record {record_number}: {e}") from e
+            records.append(data_record(table_number, record_number, payload))
+            for header_size, index_record in index_records(table_number, definition, payload, record_number, encoding):
+                index_number = index_record[4]
+                index = definition.indexes[index_number]
+                if not index.flags.DUP:
+                    key = index_record[:header_size]
+                    if key in unique_keys:
+                        raise ReverseConversionError(
+                            f"table {sqlite_table}: two rows (record numbers {unique_keys[key]} and {record_number}) "
+                            f"have the same value for unique key {index.name} "
+                            f"({', '.join(codec.index_columns(index) or [])})")
+                    unique_keys[key] = record_number
+                records.append((header_size, index_record))
+                index_counts[index_number] += 1
+            for column, value in zip(codec.columns, values):
+                if not column.is_memo:
+                    continue
+                if template is not None and column.name not in changed_columns:
+                    data = original_memos.get(column.memo_index)
+                else:
+                    data = codec.encode_memo(value)
+                if data is not None:
+                    records.extend(memo_records(table_number, record_number, column.memo_index, memo_chunks(data)))
+
+        records.append(metadata_record(table_number, DATA_TYPE, len(plan), metadata.get(DATA_TYPE, 0)))
+        for index_number in range(len(definition.indexes)):
+            if index_number in metadata or index_counts[index_number]:
+                records.append(metadata_record(table_number, index_number, index_counts[index_number],
+                                               metadata.get(index_number, 0)))
+        return records, len(plan), next_record_number
+
+    @staticmethod
+    def _match_rows(codec, current, originals, memos, next_record_number):
+        """
+        Pair each SQLite row with the TopSpeed record it came from.
+
+        Returns (plan, next record number, whether anything changed), where plan holds
+        (values, record number, original payload or None, changed column names, original memos).
+        Rows are paired by rowid; rows whose rowid link no longer holds (e.g. after VACUUM
+        renumbered them) are paired by content; anything left is new.
+        """
+        names = [c.name for c in codec.columns]
+        original_values = {}
+        for row_id, (record_number, payload) in originals.items():
+            original_values[row_id] = _normalize(codec.decode(payload, memos.get(record_number)))
+
+        used = set()
+        plan_by_position: Dict[int, Tuple[Any, tuple, Any]] = {}
+        pending = []
+        for position, row in enumerate(current):
+            row_id, values = row[0], _normalize(row[1:])
+            if row_id in original_values and row_id not in used and original_values[row_id] == values:
+                used.add(row_id)
+                plan_by_position[position] = (row_id, values, [])
             else:
-                # Handle non-NULL values
-                if col['type'] == 'INTEGER':
-                    data += struct.pack('<i', int(value))
-                elif col['type'] == 'TEXT':
-                    try:
-                        text_bytes = str(value).encode('ascii')
-                    except UnicodeEncodeError:
-                        # Replace non-ASCII characters with safe alternatives
-                        safe_text = str(value).encode('ascii', errors='replace').decode('ascii')
-                        text_bytes = safe_text.encode('ascii')
-                    data += text_bytes
-                    data += b'\x00' * (255 - len(text_bytes))  # Pad to 255 bytes
-                elif col['type'] == 'REAL':
-                    data += struct.pack('<d', float(value))
-                elif col['type'] == 'BLOB':
-                    # Handle BLOB data
-                    if isinstance(value, bytes):
-                        data += value
-                    else:
-                        data += str(value).encode('ascii')
-        
-        return data
+                pending.append((position, row_id, values))
+
+        by_content = defaultdict(list)
+        for row_id, values in original_values.items():
+            if row_id not in used:
+                by_content[values].append(row_id)
+        still_pending = []
+        for position, row_id, values in pending:
+            candidates = [r for r in by_content.get(values, []) if r not in used]
+            if candidates:
+                used.add(candidates[0])
+                plan_by_position[position] = (candidates[0], values, [])
+            else:
+                still_pending.append((position, row_id, values))
+
+        changed = bool(still_pending) or len(used) != len(originals)
+        for position, row_id, values in still_pending:
+            if row_id in original_values and row_id not in used:
+                used.add(row_id)
+                diff = [n for n, a, b in zip(names, values, original_values[row_id]) if a != b]
+                plan_by_position[position] = (row_id, values, diff)
+            else:
+                plan_by_position[position] = (None, values, None)
+
+        plan: List[Tuple[tuple, int, Any, Any, Dict[int, bytes]]] = []
+        for position in range(len(current)):
+            row_id, values, diff = plan_by_position[position]
+            if row_id is None:
+                next_record_number += 1
+                plan.append((values, next_record_number, None, None, {}))
+            else:
+                record_number, payload = originals[row_id]
+                plan.append((values, record_number, payload, diff, memos.get(record_number, {})))
+        return plan, next_record_number, changed
+
+    @staticmethod
+    def _warn_unverified_keys(definition, table_name, stats):
+        for index in definition.indexes:
+            types = {str(definition.fields[f.field_number].type) for f in index.fields}
+            unverified = sorted(types - VERIFIED_KEY_TYPES)
+            if unverified:
+                stats['warnings'].append(
+                    f"table {table_name}, index {index.name}: key encoding for {', '.join(unverified)} fields "
+                    f"has not been checked against TopSpeed; verify the file opens correctly")
+
+    def _check_untracked_table(self, conn, sqlite_table, table_name, table_number, verbatim, stats):
+        """Tables converted without a codec are written back as they were; flag edits that will be lost"""
+        if not sqlite_table or not self._table_exists(conn, sqlite_table):
+            return
+        original_rows = sum(1 for _, record in verbatim
+                            if table_number_of(record) == table_number and record[4] == DATA_TYPE)
+        current_rows = conn.execute(f'SELECT COUNT(*) FROM "{sqlite_table}"').fetchone()[0]
+        if current_rows != original_rows:
+            stats['warnings'].append(
+                f"table {sqlite_table} was converted without a field layout, so changes to it can't be written "
+                f"back; the original {original_rows} records were kept")
+
+    @staticmethod
+    def _table_exists(conn, name: str) -> bool:
+        return conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?", (name,)).fetchone() is not None
+
+
+def _normalize(values) -> tuple:
+    """Make SQLite values and freshly decoded values comparable (and hashable)"""
+    normalized = []
+    for value in values:
+        if isinstance(value, float) and value != value:
+            value = None
+        elif isinstance(value, memoryview):
+            value = bytes(value)
+        normalized.append(value)
+    return tuple(normalized)

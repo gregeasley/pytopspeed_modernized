@@ -361,6 +361,9 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "memory: mark test as memory intensive"
     )
+    config.addinivalue_line(
+        "markers", "real_topspeed: use the real TPS reader instead of the default mocks"
+    )
 
 
 # Skip performance tests by default unless explicitly requested
@@ -461,8 +464,12 @@ def cleanup_after_test():
 
 # Mock external dependencies
 @pytest.fixture(autouse=True)
-def mock_external_dependencies():
+def mock_external_dependencies(request):
     """Mock external dependencies that might not be available in test environment"""
+    if request.node.get_closest_marker('real_topspeed'):
+        # Tests that build their own TopSpeed files need the real reader
+        yield None
+        return
     with pytest.MonkeyPatch().context() as m:
         # Mock psutil if not available
         try:

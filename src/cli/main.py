@@ -146,7 +146,9 @@ def convert_to_topspeed(args) -> int:
             print(f"   Duration: {results['duration']:.2f} seconds")
             print(f"   Files created: {', '.join(results['files_created'])}")
             print(f"   Output directory: {args.output_dir}")
-                
+            for warning in results.get('warnings', []):
+                print(f"   Warning: {warning}")
+
         else:
             print(f"ERROR: Reverse conversion failed!")
             for error in results['errors']:

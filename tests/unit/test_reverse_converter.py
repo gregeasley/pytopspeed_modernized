@@ -1,396 +1,208 @@
 #!/usr/bin/env python3
 """
-Unit tests for reverse converter functionality (Issue I3)
+Unit tests for reverse conversion (SQLite back to TopSpeed)
 
-Tests the ReverseConverter class for converting SQLite databases
-back to TopSpeed .phd and .mod files.
+Each test builds a synthetic TopSpeed file, converts it to SQLite, optionally edits the
+database, converts it back, and reads the result with pytopspeed.
 """
 
-import pytest
-import sqlite3
-import tempfile
+import json
 import os
+import sqlite3
 import struct
-from unittest.mock import Mock, patch, MagicMock
-
 import sys
 from pathlib import Path
+
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'src'))
 
+from pytopspeed import TPS
+from pytopspeed.tpswriter import index_records, read_raw_records
 from converter.reverse_converter import ReverseConverter
+from converter.sqlite_converter import SqliteConverter
+from tps_builder import build_file, wells_table
+
+pytestmark = pytest.mark.real_topspeed
 
 
-class TestReverseConverter:
-    """Test cases for reverse converter"""
-    
-    @pytest.fixture
-    def temp_db(self):
-        """Create a temporary SQLite database for testing"""
-        with tempfile.NamedTemporaryFile(suffix='.sqlite', delete=False) as f:
-            db_path = f.name
-        
-        # Create a test database with sample data
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
-        
-        # Create PHD tables
-        cursor.execute('''
-            CREATE TABLE phd_TABLE1 (
-                id INTEGER PRIMARY KEY,
-                name TEXT,
-                value REAL
-            )
-        ''')
-        cursor.execute('''
-            CREATE TABLE phd_TABLE2 (
-                id INTEGER PRIMARY KEY,
-                description TEXT
-            )
-        ''')
-        
-        # Create MOD tables
-        cursor.execute('''
-            CREATE TABLE mod_MODTABLE1 (
-                id INTEGER PRIMARY KEY,
-                data BLOB
-            )
-        ''')
-        
-        # Insert sample data
-        cursor.execute("INSERT INTO phd_TABLE1 (id, name, value) VALUES (1, 'test1', 1.5)")
-        cursor.execute("INSERT INTO phd_TABLE1 (id, name, value) VALUES (2, 'test2', 2.5)")
-        cursor.execute("INSERT INTO phd_TABLE2 (id, description) VALUES (1, 'desc1')")
-        cursor.execute("INSERT INTO mod_MODTABLE1 (id, data) VALUES (1, 'blob data')")
-        
-        conn.commit()
-        conn.close()
-        
-        yield db_path
-        
-        if os.path.exists(db_path):
-            os.unlink(db_path)
-    
-    @pytest.fixture
-    def temp_dir(self):
-        """Create a temporary directory for testing"""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            yield temp_dir
-    
-    @pytest.fixture
-    def converter(self):
-        """Create a ReverseConverter instance for testing"""
-        return ReverseConverter(progress_callback=None)
-    
-    def test_convert_sqlite_to_topspeed_success(self, converter, temp_db, temp_dir):
-        """Test successful SQLite to TopSpeed conversion"""
-        results = converter.convert_sqlite_to_topspeed(temp_db, temp_dir)
-        
-        assert results['success'] is True
-        assert len(results['files_created']) == 2  # PHD and MOD files
-        assert results['tables_processed'] == 3  # 2 PHD + 1 MOD table
-        assert results['records_processed'] == 4  # Total records
-        assert len(results['errors']) == 0
-        
-        # Verify files were created
-        phd_file = os.path.join(temp_dir, 'TxWells.PHD')
-        mod_file = os.path.join(temp_dir, 'TxWells.mod')
-        
-        assert os.path.exists(phd_file)
-        assert os.path.exists(mod_file)
-        assert phd_file in results['files_created']
-        assert mod_file in results['files_created']
-    
-    def test_convert_sqlite_to_topspeed_phd_only(self, converter, temp_dir):
-        """Test conversion with only PHD tables"""
-        # Create database with only PHD tables
-        with tempfile.NamedTemporaryFile(suffix='.sqlite', delete=False) as f:
-            db_path = f.name
-        
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
-        cursor.execute('CREATE TABLE phd_ONLY (id INTEGER)')
-        cursor.execute('INSERT INTO phd_ONLY (id) VALUES (1)')
-        conn.commit()
-        conn.close()
-        
-        try:
-            results = converter.convert_sqlite_to_topspeed(db_path, temp_dir)
-            
-            assert results['success'] is True
-            assert len(results['files_created']) == 1  # Only PHD file
-            assert results['tables_processed'] == 1
-            assert results['records_processed'] == 1
-            
-            phd_file = os.path.join(temp_dir, 'TxWells.PHD')
-            assert os.path.exists(phd_file)
-            
-        finally:
-            if os.path.exists(db_path):
-                os.unlink(db_path)
-    
-    def test_convert_sqlite_to_topspeed_mod_only(self, converter, temp_dir):
-        """Test conversion with only MOD tables"""
-        # Create database with only MOD tables
-        with tempfile.NamedTemporaryFile(suffix='.sqlite', delete=False) as f:
-            db_path = f.name
-        
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
-        cursor.execute('CREATE TABLE mod_ONLY (id INTEGER)')
-        cursor.execute('INSERT INTO mod_ONLY (id) VALUES (1)')
-        conn.commit()
-        conn.close()
-        
-        try:
-            results = converter.convert_sqlite_to_topspeed(db_path, temp_dir)
-            
-            assert results['success'] is True
-            assert len(results['files_created']) == 1  # Only MOD file
-            assert results['tables_processed'] == 1
-            assert results['records_processed'] == 1
-            
-            mod_file = os.path.join(temp_dir, 'TxWells.mod')
-            assert os.path.exists(mod_file)
-            
-        finally:
-            if os.path.exists(db_path):
-                os.unlink(db_path)
-    
-    def test_convert_sqlite_to_topspeed_no_tables(self, converter, temp_dir):
-        """Test conversion with no tables"""
-        # Create empty database
-        with tempfile.NamedTemporaryFile(suffix='.sqlite', delete=False) as f:
-            db_path = f.name
-        
-        conn = sqlite3.connect(db_path)
-        conn.close()
-        
-        try:
-            results = converter.convert_sqlite_to_topspeed(db_path, temp_dir)
-            
-            assert results['success'] is False
-            assert len(results['files_created']) == 0
-            assert results['tables_processed'] == 0
-            assert results['records_processed'] == 0
-            
-        finally:
-            if os.path.exists(db_path):
-                os.unlink(db_path)
-    
-    def test_convert_sqlite_to_topspeed_missing_file(self, converter, temp_dir):
-        """Test conversion with missing SQLite file"""
-        missing_db = os.path.join(temp_dir, 'missing.sqlite')
-        results = converter.convert_sqlite_to_topspeed(missing_db, temp_dir)
-        
+def convert(source, db_path):
+    results = SqliteConverter().convert(str(source), str(db_path))
+    assert results['success'], results['errors']
+    return db_path
+
+
+def reverse(db_path, out_dir):
+    return ReverseConverter().convert_sqlite_to_topspeed(str(db_path), str(out_dir))
+
+
+def file_records(path):
+    return sorted(read_raw_records(TPS(str(path), encoding='cp1251', cached=True, check=False)))
+
+
+def wells_rows(path):
+    tps = TPS(str(path), encoding='cp1251', cached=True, check=False)
+    tps.set_current_table('WELLS')
+    return sorted(tps, key=lambda row: row['WEL:ID'])
+
+
+def assert_indexes_match_data(path):
+    tps = TPS(str(path), encoding='cp1251', cached=True, check=False)
+    definition = tps.tables.get_definition(tps.tables.get_number('WELLS'))
+    actual, expected = [], []
+    for header_size, record in read_raw_records(tps):
+        if len(record) > 4 and record[0] != 0xFE and struct.unpack('>I', record[:4])[0] == 1:
+            if record[4] < 0xF0:
+                actual.append((header_size, record))
+            elif record[4] == 0xF3:
+                expected.extend(index_records(1, definition, record[9:], struct.unpack('>I', record[5:9])[0]))
+    assert sorted(actual) == sorted(expected)
+
+
+@pytest.fixture
+def source(tmp_path):
+    return build_file(tmp_path / 'Sample.PHD', [wells_table()])
+
+
+class TestUnchangedRoundTrip:
+
+    def test_rebuilds_every_record(self, source, tmp_path):
+        db = convert(source, tmp_path / 'sample.sqlite')
+
+        results = reverse(db, tmp_path / 'out')
+
+        assert results['success'], results['errors']
+        rebuilt = tmp_path / 'out' / 'Sample.PHD'
+        assert results['files_created'] == [str(rebuilt)]
+        assert results['records_processed'] == 3
+        assert file_records(rebuilt) == file_records(source)
+
+    def test_keeps_original_file_names_for_combined_databases(self, tmp_path):
+        phd = build_file(tmp_path / 'Model.PHD', [wells_table()])
+        mod = build_file(tmp_path / 'Model.mod', [wells_table()])
+        db = tmp_path / 'combined.sqlite'
+        assert SqliteConverter().convert_multiple([str(phd), str(mod)], str(db))['success']
+
+        results = reverse(db, tmp_path / 'out')
+
+        assert results['success'], results['errors']
+        assert sorted(os.path.basename(f) for f in results['files_created']) == ['Model.PHD', 'Model.mod']
+        assert file_records(tmp_path / 'out' / 'Model.mod') == file_records(mod)
+
+
+class TestEdits:
+
+    def test_changed_value_is_written_and_indexes_follow(self, source, tmp_path):
+        db = convert(source, tmp_path / 'sample.sqlite')
+        with sqlite3.connect(db) as conn:
+            conn.execute("UPDATE WELLS SET NAME = 'Zulu 1', RATE = '[1.5, 2.5]' WHERE ID = 1")
+
+        results = reverse(db, tmp_path / 'out')
+
+        assert results['success'], results['errors']
+        rebuilt = tmp_path / 'out' / 'Sample.PHD'
+        first = wells_rows(rebuilt)[0]
+        assert first['WEL:NAME'] == 'Zulu 1'
+        assert_indexes_match_data(rebuilt)
+        # Bytes of untouched rows are unchanged
+        original = {r for r in file_records(source) if r[1][4:5] == b'\xf3' and r[1][5:9] != struct.pack('>I', 1)}
+        assert original <= set(file_records(rebuilt))
+
+    def test_array_column_edit(self, source, tmp_path):
+        db = convert(source, tmp_path / 'sample.sqlite')
+        with sqlite3.connect(db) as conn:
+            conn.execute("UPDATE WELLS SET RATE = '[7.0, 8.0]' WHERE ID = 2")
+
+        reverse(db, tmp_path / 'out')
+        again = convert(tmp_path / 'out' / 'Sample.PHD', tmp_path / 'again.sqlite')
+
+        with sqlite3.connect(again) as conn:
+            assert json.loads(conn.execute('SELECT RATE FROM WELLS WHERE ID = 2').fetchone()[0]) == [7.0, 8.0]
+
+    def test_insert_and_delete(self, source, tmp_path):
+        db = convert(source, tmp_path / 'sample.sqlite')
+        with sqlite3.connect(db) as conn:
+            conn.execute('DELETE FROM WELLS WHERE ID = 2')
+            conn.execute("INSERT INTO WELLS (ID, NAME, RATE, STATUS, NOTES) VALUES (4, 'Delta 4', '[3.0, 4.0]', 1, 'new')")
+
+        results = reverse(db, tmp_path / 'out')
+
+        assert results['success'], results['errors']
+        rebuilt = tmp_path / 'out' / 'Sample.PHD'
+        rows = wells_rows(rebuilt)
+        assert [r['WEL:ID'] for r in rows] == [1, 3, 4]
+        assert rows[-1]['WEL:NAME'] == 'Delta 4'
+        # The new row gets a fresh record number
+        assert rows[-1]["b':RecNo'"] == 4
+        assert_indexes_match_data(rebuilt)
+        # The deleted row's memo is gone with it
+        memo_owners = {struct.unpack('>I', r[5:9])[0] for _, r in file_records(rebuilt)
+                       if len(r) > 4 and r[0] != 0xFE and r[4] == 0xFC}
+        assert memo_owners == {1, 4}
+
+    def test_memo_edit_round_trips(self, source, tmp_path):
+        db = convert(source, tmp_path / 'sample.sqlite')
+        long_text = 'Revised notes ' * 40
+        with sqlite3.connect(db) as conn:
+            conn.execute('UPDATE WELLS SET NOTES = ? WHERE ID = 1', (long_text,))
+
+        reverse(db, tmp_path / 'out')
+        again = convert(tmp_path / 'out' / 'Sample.PHD', tmp_path / 'again.sqlite')
+
+        with sqlite3.connect(again) as conn:
+            assert conn.execute('SELECT NOTES FROM WELLS WHERE ID = 1').fetchone()[0] == long_text
+            assert conn.execute('SELECT NOTES FROM WELLS WHERE ID = 2').fetchone()[0] == 'x' * 600
+
+    def test_rows_still_match_after_vacuum_renumbers_them(self, source, tmp_path):
+        db = convert(source, tmp_path / 'sample.sqlite')
+        with sqlite3.connect(db) as conn:
+            conn.execute('DELETE FROM WELLS WHERE ID = 1')
+        with sqlite3.connect(db) as conn:
+            conn.execute('VACUUM')
+
+        reverse(db, tmp_path / 'out')
+
+        rebuilt = tmp_path / 'out' / 'Sample.PHD'
+        kept = {r for r in file_records(source) if r[1][4:5] == b'\xf3' and r[1][5:9] != struct.pack('>I', 1)}
+        assert kept <= set(file_records(rebuilt))
+        assert [r["b':RecNo'"] for r in wells_rows(rebuilt)] == [2, 3]
+
+
+class TestErrors:
+
+    def test_duplicate_unique_key_is_reported(self, source, tmp_path):
+        db = convert(source, tmp_path / 'sample.sqlite')
+        with sqlite3.connect(db) as conn:
+            conn.execute('UPDATE WELLS SET ID = 1 WHERE ID = 2')
+
+        results = reverse(db, tmp_path / 'out')
+
         assert results['success'] is False
-        assert len(results['errors']) > 0
+        assert 'unique key WEL:BY_ID' in results['errors'][0]
+        assert not (tmp_path / 'out' / 'Sample.PHD').exists()
+
+    def test_value_that_does_not_fit_is_reported(self, source, tmp_path):
+        db = convert(source, tmp_path / 'sample.sqlite')
+        with sqlite3.connect(db) as conn:
+            conn.execute("UPDATE WELLS SET RATE = '[1, 2, 3]' WHERE ID = 1")
+
+        results = reverse(db, tmp_path / 'out')
+
+        assert results['success'] is False
+        assert 'RATE' in results['errors'][0]
+
+    def test_database_without_metadata(self, tmp_path):
+        db = tmp_path / 'plain.sqlite'
+        with sqlite3.connect(db) as conn:
+            conn.execute('CREATE TABLE T (A INTEGER)')
+
+        results = ReverseConverter().convert_sqlite_to_topspeed(str(db), str(tmp_path / 'out'))
+
+        assert results['success'] is False
+        assert 'no TopSpeed metadata' in results['errors'][0]
+
+    def test_missing_file(self, tmp_path):
+        results = ReverseConverter().convert_sqlite_to_topspeed(str(tmp_path / 'nope.sqlite'), str(tmp_path))
+
+        assert results['success'] is False
         assert 'not found' in results['errors'][0]
-    
-    def test_get_table_schema(self, converter, temp_db):
-        """Test getting table schema from SQLite"""
-        conn = sqlite3.connect(temp_db)
-        
-        schema = converter._get_table_schema(conn, 'phd_TABLE1')
-        
-        assert len(schema) == 3  # id, name, value columns
-        assert schema[0]['name'] == 'id'
-        assert schema[0]['type'] == 'INTEGER'
-        assert schema[0]['primary_key'] is True
-        assert schema[1]['name'] == 'name'
-        assert schema[1]['type'] == 'TEXT'
-        assert schema[2]['name'] == 'value'
-        assert schema[2]['type'] == 'REAL'
-        
-        conn.close()
-    
-    def test_create_table_definition(self, converter):
-        """Test creating TopSpeed table definition from SQLite schema"""
-        schema = [
-            {'name': 'id', 'type': 'INTEGER', 'primary_key': True},
-            {'name': 'name', 'type': 'TEXT', 'primary_key': False},
-            {'name': 'data', 'type': 'BLOB', 'primary_key': False}
-        ]
-        
-        table_def = converter._create_table_definition('TEST_TABLE', schema)
-        
-        assert table_def['field_count'] == 2  # INTEGER and TEXT (BLOB becomes memo)
-        assert table_def['memo_count'] == 1   # BLOB field
-        assert table_def['index_count'] == 0  # No indexes in this test
-        assert len(table_def['fields']) == 2
-        assert len(table_def['memos']) == 1
-        
-        # Check field definitions
-        assert table_def['fields'][0]['name'] == 'id'
-        assert table_def['fields'][0]['type'] == 'LONG'
-        assert table_def['fields'][1]['name'] == 'name'
-        assert table_def['fields'][1]['type'] == 'STRING'
-        
-        # Check memo definition
-        assert table_def['memos'][0]['name'] == 'data'
-        assert table_def['memos'][0]['memo_type'] == 1  # BLOB
-    
-    def test_write_table_name_record(self, converter, temp_dir):
-        """Test writing TABLE_NAME record to file"""
-        test_file = os.path.join(temp_dir, 'test_record')
-        
-        with open(test_file, 'wb') as f:
-            converter._write_table_name_record(f, 'TEST_TABLE')
-        
-        # Verify file was created and has correct size
-        assert os.path.exists(test_file)
-        file_size = os.path.getsize(test_file)
-        assert file_size > 0
-        
-        # Read and verify record structure
-        with open(test_file, 'rb') as f:
-            data = f.read()
-        
-        # Check record header
-        data_size = struct.unpack('<H', data[:2])[0]
-        table_number = struct.unpack('<I', data[2:6])[0]
-        record_type = data[6]
-        
-        assert record_type == 0xFE  # TABLE_NAME record type
-        assert table_number == 0    # Placeholder value
-        assert data_size == 9 + len('TEST_TABLE')  # Header + table name
-    
-    def test_write_table_name_record_encoding_handling(self, converter, temp_dir):
-        """Test writing TABLE_NAME record with non-ASCII characters"""
-        test_file = os.path.join(temp_dir, 'test_record_unicode')
-        
-        with open(test_file, 'wb') as f:
-            converter._write_table_name_record(f, 'ТЕСТ_ТАБЛИЦА')  # Cyrillic characters
-        
-        # Should not raise an exception and should create a file
-        assert os.path.exists(test_file)
-        file_size = os.path.getsize(test_file)
-        assert file_size > 0
-    
-    def test_convert_row_to_binary(self, converter):
-        """Test converting SQLite row to binary format"""
-        schema = [
-            {'name': 'id', 'type': 'INTEGER'},
-            {'name': 'name', 'type': 'TEXT'},
-            {'name': 'value', 'type': 'REAL'},
-            {'name': 'data', 'type': 'BLOB'}
-        ]
-        
-        row = (1, 'test', 1.5, b'binary data')
-        binary_data = converter._convert_row_to_binary(row, schema)
-        
-        assert len(binary_data) > 0
-        
-        # Verify integer conversion
-        id_value = struct.unpack('<i', binary_data[:4])[0]
-        assert id_value == 1
-        
-        # Verify text conversion (should be padded to 255 bytes)
-        text_data = binary_data[4:259]  # Skip integer, get text portion
-        assert text_data.startswith(b'test')
-        assert len(text_data) == 255
-        
-        # Verify real conversion
-        real_value = struct.unpack('<d', binary_data[259:267])[0]
-        assert abs(real_value - 1.5) < 0.001
-    
-    def test_convert_row_to_binary_null_values(self, converter):
-        """Test converting SQLite row with NULL values"""
-        schema = [
-            {'name': 'id', 'type': 'INTEGER'},
-            {'name': 'name', 'type': 'TEXT'},
-            {'name': 'value', 'type': 'REAL'}
-        ]
-        
-        row = (None, None, None)
-        binary_data = converter._convert_row_to_binary(row, schema)
-        
-        assert len(binary_data) > 0
-        
-        # Verify NULL integer (should be 0)
-        id_value = struct.unpack('<i', binary_data[:4])[0]
-        assert id_value == 0
-        
-        # Verify NULL text (should be all zeros)
-        text_data = binary_data[4:259]
-        assert text_data == b'\x00' * 255
-        
-        # Verify NULL real (should be 0.0)
-        real_value = struct.unpack('<d', binary_data[259:267])[0]
-        assert real_value == 0.0
-    
-    def test_convert_row_to_binary_encoding_handling(self, converter):
-        """Test converting row with non-ASCII text"""
-        schema = [
-            {'name': 'name', 'type': 'TEXT'}
-        ]
-        
-        row = ('тест',)  # Cyrillic text
-        binary_data = converter._convert_row_to_binary(row, schema)
-        
-        # Should not raise an exception
-        assert len(binary_data) == 255  # Padded to 255 bytes
-    
-    def test_create_file_header(self, converter):
-        """Test creating TopSpeed file header"""
-        header_data = converter._create_file_header(5)  # 5 tables
-        
-        assert len(header_data) == 0x200  # 512 bytes
-        assert header_data.startswith(struct.pack('<I', 0x200))  # offset
-        assert b"tOpS\x00\x00" in header_data  # TopSpeed magic number
-    
-    def test_progress_callback_invocation(self, converter, temp_db, temp_dir):
-        """Test that progress callback is invoked during conversion"""
-        progress_calls = []
-        
-        def progress_callback(current, total, message):
-            progress_calls.append((current, total, message))
-        
-        converter.progress_callback = progress_callback
-        
-        results = converter.convert_sqlite_to_topspeed(temp_db, temp_dir)
-        
-        assert results['success'] is True
-        # Progress callback should be passed through to internal methods
-        # (Note: Current implementation doesn't use progress callback internally,
-        # but the structure is there for future enhancement)
-    
-    def test_duration_tracking(self, converter, temp_db, temp_dir):
-        """Test that conversion duration is tracked"""
-        results = converter.convert_sqlite_to_topspeed(temp_db, temp_dir)
-        
-        assert results['success'] is True
-        assert 'duration' in results
-        assert results['duration'] >= 0
-    
-    def test_file_creation_with_different_table_prefixes(self, converter, temp_dir):
-        """Test that files are created correctly based on table prefixes"""
-        # Create database with mixed prefixes
-        with tempfile.NamedTemporaryFile(suffix='.sqlite', delete=False) as f:
-            db_path = f.name
-        
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
-        cursor.execute('CREATE TABLE phd_PHDTABLE (id INTEGER)')
-        cursor.execute('CREATE TABLE mod_MODTABLE (id INTEGER)')
-        cursor.execute('CREATE TABLE tps_TPSTABLE (id INTEGER)')
-        cursor.execute('CREATE TABLE other_OTHERTABLE (id INTEGER)')
-        conn.commit()
-        conn.close()
-        
-        try:
-            results = converter.convert_sqlite_to_topspeed(db_path, temp_dir)
-            
-            assert results['success'] is True
-            assert len(results['files_created']) == 2  # PHD and MOD files
-            assert results['tables_processed'] == 2  # Only phd_ and mod_ tables
-            
-            # Verify correct files were created
-            phd_file = os.path.join(temp_dir, 'TxWells.PHD')
-            mod_file = os.path.join(temp_dir, 'TxWells.mod')
-            
-            assert os.path.exists(phd_file)
-            assert os.path.exists(mod_file)
-            
-        finally:
-            if os.path.exists(db_path):
-                os.unlink(db_path)

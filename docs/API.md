@@ -500,17 +500,31 @@ convert_sqlite_to_topspeed(sqlite_file: str, output_dir: str) -> Dict[str, Any]
 ```
 
 **Parameters:**
-- `sqlite_file` (str): Path to input SQLite database
-- `output_dir` (str): Directory for output TopSpeed files
+- `sqlite_file` (str): Path to a SQLite database created by `SqliteConverter` or `PhzConverter`
+  (it must contain the `_topspeed_*` metadata tables)
+- `output_dir` (str): Directory for output TopSpeed files; each file keeps its original name
 
 **Returns:**
-- `Dict[str, Any]`: Conversion results with success status, statistics, and errors
+- `Dict[str, Any]`: `success`, `files_created`, `tables_processed`, `records_processed`,
+  `duration`, `errors`, and `warnings`
+
+Unchanged rows are written back byte for byte, edited rows are re-encoded column by column,
+and index entries and record counts are regenerated. No file is written for a source file
+whose data can't be stored (for example, a duplicate value in a unique key); the reason is
+in `errors`.
 
 **Example:**
 ```python
 converter = ReverseConverter()
 results = converter.convert_sqlite_to_topspeed('input.sqlite', 'output_dir/')
 ```
+
+### Low-level writer
+
+`pytopspeed.tpswriter.build_tps(records, last_issued_row, change_count)` builds a complete
+TopSpeed file from raw `(header_size, record_bytes)` pairs: it sorts the records by key,
+packs them into prefix- and RLE-compressed pages, builds the page tree and writes the header.
+`read_raw_records(tps)` returns the raw records of an open file in the same form.
 
 ## 🗺️ Schema Mapper
 
