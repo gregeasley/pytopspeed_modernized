@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Silent data loss in tables with numbered fields**: Schema creation and data migration used different
+  array analyses, so INSERTs failed against tables like MODSEGMENT, LSESEGMENT, CUMVOL and TITLES and they
+  were left empty. Migration now uses the same `MultidimensionalHandler` analysis as the schema.
+- **False array detection**: Distinct fields sharing a stem (e.g. `OMSG:VALUE` / `OMSG:VALUE2`) are no longer
+  grouped into a JSON array; grouping requires numeric suffixes numbered 1..n.
+- **Interleaved multi-field arrays**: Elements are read by their recorded field names/offsets
+  (e.g. `CUM:PROD1, CUM:PRE1, CUM:PROD2, ...`).
+- **Memo columns in array tables**: Memo columns are included in the INSERT so the column and value counts match.
+- **Wrong values in multi-portion tables**: Tables whose definition parsed normally but spans several
+  definition portions (ECON, INVEST, MAINLSE, RPTGRP, TITLES) no longer go through the specialized
+  multidimensional raw parser, which misread their strings and numbers.
+- **Table definition fallback**: `_get_table_definition_robust` returns a minimal definition when enhanced
+  parsing returns nothing or raises, instead of returning `None` or propagating the error.
+- Added the missing `TABLE_DEFINITION_FIELD_STRUCT` import used by field definition parsing.
+
 ## [1.1.3] - 2025-01-12
 
 ### Fixed

@@ -19,6 +19,7 @@ class ArrayFieldInfo:
     is_single_field_array: bool = False  # True if detected as single-field array, False if multi-field array
     double_79_extra1: int = None  # Extra field 1 for type 79 fields
     double_79_extra2: int = None  # Extra field 2 for type 79 fields
+    element_names: List[str] = None  # Source field names for multi-field arrays (e.g., CUM:PROD1..CUM:PROD5)
 
 class MultidimensionalHandler:
     """Handles multi-dimensional fields and tables in TopSpeed format"""
@@ -141,7 +142,20 @@ class MultidimensionalHandler:
         
         # Sort fields by offset
         fields.sort(key=lambda f: f.offset)
-        
+
+        # Only treat the group as an array when every field carries a numeric suffix
+        # numbered 1..n in offset order (CUM:PROD1..CUM:PROD5). Distinct fields that merely
+        # share a stem, such as OMSG:VALUE and OMSG:VALUE2, stay separate columns.
+        import re
+        suffixes = []
+        for f in fields:
+            match = re.search(r'(\d+)$', str(f.name))
+            if not match:
+                return None
+            suffixes.append(int(match.group(1)))
+        if suffixes != list(range(1, len(fields) + 1)):
+            return None
+
         # Check for regular spacing (array pattern)
         offsets = [f.offset for f in fields]
         if len(offsets) < 2:
@@ -168,7 +182,8 @@ class MultidimensionalHandler:
                 start_offset=offsets[0],
                 element_offsets=offsets,
                 double_79_extra1=getattr(fields[0], 'double_79_extra1', None),
-                double_79_extra2=getattr(fields[0], 'double_79_extra2', None)
+                double_79_extra2=getattr(fields[0], 'double_79_extra2', None),
+                element_names=[f.name for f in fields]
             )
         
         return None

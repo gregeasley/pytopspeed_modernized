@@ -13,6 +13,7 @@ import logging
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from pytopspeed import TPS
+from pytopspeed.tpstable import TABLE_DEFINITION_FIELD_STRUCT
 from converter.schema_mapper import TopSpeedToSQLiteMapper
 
 
@@ -188,23 +189,25 @@ class SqliteConverter:
             # Handle dictionary records (from TPS iterator)
             if isinstance(record, dict):
                 # Build values in the correct order for field_names
-                for field_name in analysis['regular_fields']:
-                    sanitized_name = self.schema_mapper.sanitize_field_name(field_name.name)
-                    values.append(record.get(field_name.name, None))
-                
+                for field in analysis['regular_fields']:
+                    values.append(self._convert_field_value(field, record.get(field.name, None)))
+
                 # Handle array fields - combine individual array elements into JSON
                 for array_info in analysis['array_fields']:
-                    array_values = []
-                    for i in range(array_info.array_size):
-                        # Look for individual array elements in the record
-                        element_name = f"{array_info.base_name}{i+1}"
-                        element_value = record.get(element_name, None)
-                        array_values.append(element_value)
-                    
+                    # Multi-field arrays know their source field names; otherwise assume BASE1..BASEn
+                    element_names = getattr(array_info, 'element_names', None) or [
+                        f"{array_info.base_name}{i+1}" for i in range(array_info.array_size)
+                    ]
+                    array_values = [record.get(element_name, None) for element_name in element_names]
+
                     # Convert to JSON
                     import json
                     values.append(json.dumps(array_values))
-                
+
+                # Memo data is already included in dict records
+                for memo in getattr(table_def, 'memos', None) or []:
+                    values.append(record.get(memo.name, None))
+
                 return tuple(values)
             
             # Handle raw record objects
@@ -253,9 +256,14 @@ class SqliteConverter:
                         try:
                             array_values = []
                             
-                            # Parse array elements from raw data
+                            # Parse array elements from raw data. Multi-field arrays can be
+                            # interleaved with other fields, so prefer the recorded element offsets.
+                            element_offsets = getattr(array_info, 'element_offsets', None)
                             for i in range(array_info.array_size):
-                                offset = array_info.start_offset + i * array_info.element_size
+                                if element_offsets and i < len(element_offsets):
+                                    offset = element_offsets[i]
+                                else:
+                                    offset = array_info.start_offset + i * array_info.element_size
                                 if offset + array_info.element_size <= len(raw_data):
                                     element_data = raw_data[offset:offset + array_info.element_size]
                                     
@@ -396,27 +404,18 @@ class SqliteConverter:
                 self.logger.warning(f"Skipping data migration for {table_name}: No table definition")
                 return 0
             
-            # Check if this is a multidimensional table (early detection)
-            is_multidimensional = False
-            if hasattr(table_def, 'is_multidimensional_table'):
-                is_multidimensional = table_def.is_multidimensional_table
-            else:
-                # Check table structure for multidimensional indicators
-                table = None
-                for num, t in tps.tables._TpsTablesList__tables.items():
-                    if t.name == table_name:
-                        table = t
-                        break
-                
-                if table and hasattr(table, 'definition_bytes') and isinstance(table.definition_bytes, dict) and len(table.definition_bytes) > 1:
-                    is_multidimensional = True
-            
+            # Only definitions built by _create_multidimensional_table_definition need the specialized
+            # raw parser. A definition that pytopspeed parsed normally is accurate even when it was
+            # stored in several portions, and the specialized parser misreads those tables.
+            is_multidimensional = getattr(table_def, 'is_multidimensional_table', False) is True
+
             if is_multidimensional:
                 # Use specialized multidimensional data migration
                 return self._migrate_multidimensional_table_data(tps, table_name, sanitized_table_name, conn, table_def)
             else:
-                # Use fast path for regular tables, but check for arrays
-                analysis = self._analyze_regular_table_for_arrays(table_def)
+                # Use fast path for regular tables, but check for arrays. This must be the same
+                # analysis _create_schema used, or the INSERT columns won't match the table.
+                analysis = self.schema_mapper.multidimensional_handler.analyze_table_structure(table_def)
             
             # Get field names for INSERT statement
             field_names = []
@@ -431,6 +430,11 @@ class SqliteConverter:
                 for array_info in analysis['array_fields']:
                     sanitized_field_name = self.schema_mapper.sanitize_field_name(array_info.base_name)
                     field_names.append(sanitized_field_name)
+
+                # Memo columns follow, matching _convert_multidimensional_record_to_tuple
+                for memo in getattr(table_def, 'memos', None) or []:
+                    sanitized_memo_name = self.schema_mapper.sanitize_field_name(memo.name)
+                    field_names.append(sanitized_memo_name)
             else:
                 # Use original logic for regular tables
                 for field in table_def.fields:
@@ -937,27 +941,33 @@ class SqliteConverter:
                 # This is a multidimensional table - use specialized parsing
                 self.logger.info(f"Detected multidimensional table {table_name} with {len(table.definition_bytes)} portions")
                 return self._create_multidimensional_table_definition(table_name, table.definition_bytes)
-            else:
-                # Regular table with parsing issues - try enhanced parsing
+
+            # Regular table with parsing issues - try enhanced parsing
+            if hasattr(table, 'definition_bytes'):
                 self.logger.info(f"Attempting enhanced table definition for {table_name}")
-                if hasattr(table, 'definition_bytes'):
-                    return self._create_enhanced_table_definition(table_name, table.definition_bytes)
-                else:
-                    # Fall back to minimal table definition
-                    self.logger.info(f"Creating minimal table definition for {table_name}")
-                    
-                    class MinimalTableDef:
-                        def __init__(self, name):
-                            self.name = name
-                            self.fields = []
-                            self.memos = []
-                            self.indexes = []
-                            self.record_size = 0
-                            self.field_count = 0
-                            self.memo_count = 0
-                            self.index_count = 0
-                    
-                    return MinimalTableDef(table_name)
+                try:
+                    enhanced_def = self._create_enhanced_table_definition(table_name, table.definition_bytes)
+                except Exception as enhanced_error:
+                    self.logger.warning(f"Enhanced table definition failed for {table_name}: {enhanced_error}")
+                    enhanced_def = None
+                if enhanced_def is not None:
+                    return enhanced_def
+
+            # Fall back to minimal table definition
+            self.logger.info(f"Creating minimal table definition for {table_name}")
+
+            class MinimalTableDef:
+                def __init__(self, name):
+                    self.name = name
+                    self.fields = []
+                    self.memos = []
+                    self.indexes = []
+                    self.record_size = 0
+                    self.field_count = 0
+                    self.memo_count = 0
+                    self.index_count = 0
+
+            return MinimalTableDef(table_name)
     
     def _migrate_large_array_table_data(self, tps, table_name: str, sanitized_table_name: str, 
                                       conn: sqlite3.Connection, table_def) -> int:
@@ -1550,48 +1560,6 @@ class SqliteConverter:
         
         return parsed_fields
     
-    def _analyze_regular_table_for_arrays(self, table_def):
-        """
-        Analyze a regular table definition for array fields
-        
-        Args:
-            table_def: Regular table definition
-            
-        Returns:
-            Dictionary with has_arrays, array_fields, and regular_fields
-        """
-        has_arrays = False
-        array_fields = []
-        regular_fields = []
-        
-        if hasattr(table_def, 'fields'):
-            for field in table_def.fields:
-                if hasattr(field, 'array_element_count') and field.array_element_count > 1:
-                    # This is an array field
-                    has_arrays = True
-                    array_info = type('ArrayInfo', (), {
-                        'base_name': field.name,
-                        'element_count': field.array_element_count,
-                        'array_size': field.array_element_count,  # For compatibility with existing code
-                        'element_size': field.size // field.array_element_count if field.array_element_count > 0 else 0,
-                        'total_size': field.size,
-                        'field_type': field.type,
-                        'element_type': field.type,  # For compatibility with existing code
-                        'offset': field.offset,
-                        'start_offset': field.offset,  # For compatibility with existing code
-                        'is_single_field_array': True  # Regular table arrays are always single-field arrays
-                    })()
-                    array_fields.append(array_info)
-                else:
-                    # Regular field
-                    regular_fields.append(field)
-        
-        return {
-            'has_arrays': has_arrays,
-            'array_fields': array_fields,
-            'regular_fields': regular_fields
-        }
-
     def _analyze_field_names_for_arrays(self, field_names: List[str]) -> Dict[str, Dict]:
         """
         Analyze field names to identify array patterns

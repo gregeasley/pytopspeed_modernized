@@ -394,13 +394,9 @@ class TestSqliteConverterEnhancements:
         # Mock failed table definition
         tps.tables.get_definition.side_effect = Exception("Parse error")
         
-        # Mock table with definition bytes
+        # Mock table with a single definition portion (multi-portion tables take the multidimensional path)
         mock_table = Mock()
-        mock_table.definition_bytes = {
-            0: b'\x01\x00\x00\x10\x29\x00\x00\x00\x00\x00',
-            1: b'\x00' * 500,
-            2: b'\x00' * 15
-        }
+        mock_table.definition_bytes = {0: b'\x01\x00\x00\x10\x29\x00\x00\x00\x00\x00' + b'\x00' * 500}
         tps.tables._TpsTablesList__tables = {table_number: mock_table}
         
         # Mock enhanced table definition creation
@@ -457,13 +453,9 @@ class TestSqliteConverterEnhancements:
         # Mock failed table definition
         tps.tables.get_definition.side_effect = Exception("Parse error")
         
-        # Mock table with definition bytes
+        # Mock table with a single definition portion (multi-portion tables take the multidimensional path)
         mock_table = Mock()
-        mock_table.definition_bytes = {
-            0: b'\x01\x00\x00\x10\x29\x00\x00\x00\x00\x00',
-            1: b'\x00' * 500,
-            2: b'\x00' * 15
-        }
+        mock_table.definition_bytes = {0: b'\x01\x00\x00\x10\x29\x00\x00\x00\x00\x00' + b'\x00' * 500}
         tps.tables._TpsTablesList__tables = {table_number: mock_table}
         
         # Mock enhanced table definition creation exception
