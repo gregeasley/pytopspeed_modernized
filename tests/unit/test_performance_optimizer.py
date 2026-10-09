@@ -5,6 +5,7 @@ Unit tests for PerformanceOptimizer
 
 import pytest
 import tempfile
+import multiprocessing as mp
 import os
 import sqlite3
 from unittest.mock import Mock, patch, MagicMock
@@ -357,7 +358,8 @@ class TestPerformanceOptimizer:
         assert "PERFORMANCE OPTIMIZATION REPORT" in report
         assert "PERFORMANCE METRICS" in report
         assert "OPTIMIZATION SETTINGS" in report
-        assert "Max Workers: 8" in report  # Default value
+        # Default worker count depends on the machine's CPUs (capped at 8)
+        assert f"Max Workers: {min(mp.cpu_count(), 8)}" in report
         assert "Memory Limit: 1024 MB" in report  # Default value
         assert "Cache Size: 1000" in report  # Default value
     
