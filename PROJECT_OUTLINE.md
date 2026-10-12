@@ -5,7 +5,7 @@ This project modernizes and extends the existing [pytopspeed library](https://gi
 
 ## 🎯 Current Status: **Forward and Reverse Conversion Complete - Validated in PHDWin**
 
-Package `pytopspeed-modernized` version 1.1.3; the reverse-conversion rewrite and forward-conversion fixes are unreleased (listed under [Unreleased] in CHANGELOG.md).
+Package `pytopspeed-modernized` version 1.2.0, which includes the reverse-conversion rewrite and the forward-conversion fixes (see CHANGELOG.md).
 
 ### ✅ **Completed Phases:**
 - **Phase 1**: Research and Analysis - **COMPLETE**

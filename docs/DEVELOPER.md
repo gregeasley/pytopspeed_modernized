@@ -329,8 +329,8 @@ Add a subparser and handler in `src/cli/main.py`, add tests, and update `docs/` 
 
 ### Version Numbering
 
-Semantic versioning (MAJOR.MINOR.PATCH). The current version is 1.1.3; unreleased changes are listed under
-`[Unreleased]` in `CHANGELOG.md`.
+Semantic versioning (MAJOR.MINOR.PATCH). The current version is 1.2.0. Changes not yet in a release go
+under `[Unreleased]` in `CHANGELOG.md`.
 
 The version string is duplicated and must be updated in all of:
 `setup.py`, `setup.cfg`, `pyproject.toml`, `src/pytopspeed/__init__.py` and `src/cli/__init__.py`

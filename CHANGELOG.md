@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-12
+
 ### Added
 - **Working reverse conversion**: `ReverseConverter` rebuilds the original TopSpeed file(s) from a converted
   database, including edits. Unchanged rows are written back byte for byte, edited rows keep their record
