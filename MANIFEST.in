@@ -10,8 +10,8 @@ recursive-include examples *.py *.md
 # Include documentation
 recursive-include docs *.md *.rst *.txt
 
-# Include test data (for development/testing)
-recursive-include assets *.phd *.mod *.phz
+# Never ship sample data: assets/ holds client databases (git-ignored) that must not be published
+prune assets
 
 # Include configuration files
 include pyproject.toml
