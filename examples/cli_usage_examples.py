@@ -35,8 +35,9 @@ def main():
     print("Pytopspeed CLI Usage Examples")
     print("=" * 60)
     
-    # Get the path to the CLI script
-    cli_script = Path(__file__).parent.parent / "pytopspeed.py"
+    # Get the path to the CLI script (when the package is installed, the
+    # same commands are available as "pytopspeed ...")
+    cli_script = Path(__file__).parent.parent / "src" / "cli" / "main.py"
     
     if not cli_script.exists():
         print(f"Error: CLI script not found at {cli_script}")

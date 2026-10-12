@@ -10,7 +10,7 @@ Features demonstrated:
 - Single-field vs multi-field arrays
 - JSON querying in SQLite
 - Data type preservation (null vs zero)
-- Boolean array handling
+- Integer arrays for BYTE fields (stored as numbers, not true/false)
 - Enhanced type mapping (including type 79 DOUBLE_79 fields)
 - Generic binary data detection
 - Large table support (100+ fields)
@@ -56,7 +56,13 @@ def demonstrate_multidimensional_handling():
         tables_with_arrays = []
         for table_number in tps_file.tables._TpsTablesList__tables:
             table = tps_file.tables._TpsTablesList__tables[table_number]
-            table_def = tps_file.tables.get_definition(table.number)
+            if not table.name:
+                continue  # file-level record without a table definition
+            try:
+                table_def = tps_file.tables.get_definition(table.number)
+            except Exception as e:
+                print(f"   ⚠️  Could not read definition of {table.name}: {e}")
+                continue
             
             # Use multidimensional handler to analyze
             handler = MultidimensionalHandler()
@@ -92,9 +98,9 @@ def demonstrate_multidimensional_handling():
         result = converter.convert(str(sample_file), output_file)
         
         if result['success']:
-            print(f"   ✅ Conversion successful: {result['tables_created']} tables, {result['records_migrated']} records")
+            print(f"   ✅ Conversion successful: {result['tables_created']} tables, {result['total_records']} records")
         else:
-            print(f"   ❌ Conversion failed: {result.get('error', 'Unknown error')}")
+            print(f"   ❌ Conversion failed: {result.get('errors', 'Unknown error')}")
             return
     
     except Exception as e:
@@ -108,8 +114,9 @@ def demonstrate_multidimensional_handling():
         conn = sqlite3.connect(output_file)
         cursor = conn.cursor()
         
-        # Get all tables
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+        # Get all data tables (skip the hidden _topspeed_* metadata tables)
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' "
+                       "AND name NOT LIKE '!_topspeed!_%' ESCAPE '!' ORDER BY name")
         tables = [row[0] for row in cursor.fetchall()]
         
         print(f"   Found {len(tables)} tables in SQLite database")
@@ -117,7 +124,7 @@ def demonstrate_multidimensional_handling():
         # Find tables with JSON columns (arrays)
         tables_with_json = []
         for table_name in tables:
-            cursor.execute(f"PRAGMA table_info({table_name})")
+            cursor.execute(f'PRAGMA table_info("{table_name}")')
             columns = cursor.fetchall()
             
             json_columns = []
@@ -125,7 +132,7 @@ def demonstrate_multidimensional_handling():
                 col_name, col_type = col[1], col[2]
                 if col_type == 'TEXT':  # JSON arrays are stored as TEXT
                     # Check if this might be a JSON column by sampling data
-                    cursor.execute(f"SELECT {col_name} FROM {table_name} LIMIT 1")
+                    cursor.execute(f'SELECT "{col_name}" FROM "{table_name}" LIMIT 1')
                     sample = cursor.fetchone()
                     if sample and sample[0] and sample[0].startswith('['):
                         json_columns.append(col_name)
@@ -167,13 +174,13 @@ def demonstrate_multidimensional_handling():
             print(f"   Using table '{table_name}' with JSON column '{json_column}'")
             
             # Get record count
-            cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+            cursor.execute(f'SELECT COUNT(*) FROM "{table_name}"')
             count = cursor.fetchone()[0]
             print(f"   Table has {count} records")
             
             if count > 0:
                 # Show sample JSON data
-                cursor.execute(f"SELECT {json_column} FROM {table_name} LIMIT 3")
+                cursor.execute(f'SELECT "{json_column}" FROM "{table_name}" LIMIT 3')
                 samples = cursor.fetchall()
                 
                 print(f"   Sample JSON data from '{json_column}':")
@@ -192,9 +199,9 @@ def demonstrate_multidimensional_handling():
                 
                 # Count non-null elements in first record
                 cursor.execute(f"""
-                    SELECT json_array_length({json_column}) as array_length
-                    FROM {table_name} 
-                    WHERE {json_column} IS NOT NULL 
+                    SELECT json_array_length("{json_column}") as array_length
+                    FROM "{table_name}" 
+                    WHERE "{json_column}" IS NOT NULL 
                     LIMIT 1
                 """)
                 result = cursor.fetchone()
@@ -203,9 +210,9 @@ def demonstrate_multidimensional_handling():
                 
                 # Extract first element from all records
                 cursor.execute(f"""
-                    SELECT json_extract({json_column}, '$[0]') as first_element
-                    FROM {table_name} 
-                    WHERE {json_column} IS NOT NULL 
+                    SELECT json_extract("{json_column}", '$[0]') as first_element
+                    FROM "{table_name}" 
+                    WHERE "{json_column}" IS NOT NULL 
                     LIMIT 5
                 """)
                 results = cursor.fetchall()
@@ -237,9 +244,9 @@ def demonstrate_multidimensional_handling():
                 cursor.execute(f"""
                     SELECT 
                         COUNT(*) as total_records,
-                        COUNT({json_column}) as non_null_records,
-                        COUNT(CASE WHEN {json_column} IS NULL THEN 1 END) as null_records
-                    FROM {table_name}
+                        COUNT("{json_column}") as non_null_records,
+                        COUNT(CASE WHEN "{json_column}" IS NULL THEN 1 END) as null_records
+                    FROM "{table_name}"
                 """)
                 result = cursor.fetchone()
                 total, non_null, null_count = result
@@ -252,27 +259,23 @@ def demonstrate_multidimensional_handling():
                     print(f"     - ✅ NULL vs zero distinction preserved")
                     break
         
-        # Check for boolean arrays
-        cursor.execute("""
-            SELECT name FROM sqlite_master 
-            WHERE type='table' AND sql LIKE '%TEXT%'
-        """)
-        tables = cursor.fetchall()
-        
-        for (table_name,) in tables:
-            cursor.execute(f"PRAGMA table_info({table_name})")
-            columns = cursor.fetchall()
-            
-            for col in columns:
-                col_name = col[1]
-                # Sample data to check for boolean arrays
-                cursor.execute(f"SELECT {col_name} FROM {table_name} WHERE {col_name} LIKE '%true%' OR {col_name} LIKE '%false%' LIMIT 1")
+        # Show an integer (BYTE/SHORT/LONG) array: elements are numbers, not booleans
+        found = False
+        for table_info in tables_with_json:
+            table_name = table_info['name']
+            for json_column in table_info['json_columns']:
+                cursor.execute(f'SELECT "{json_column}" FROM "{table_name}" '
+                               f'WHERE "{json_column}" IS NOT NULL LIMIT 1')
                 sample = cursor.fetchone()
-                if sample and sample[0]:
-                    print(f"   Table '{table_name}', column '{col_name}':")
-                    print(f"     - ✅ Boolean arrays detected and preserved")
+                values = json.loads(sample[0]) if sample else []
+                if values and all(isinstance(v, int) for v in values):
+                    print(f"   Table '{table_name}', column '{json_column}':")
+                    print(f"     - ✅ Integer array: {values[:5]}...")
+                    found = True
                     break
-    
+            if found:
+                break
+
     except Exception as e:
         print(f"❌ Error during data type demonstration: {e}")
     finally:
@@ -288,7 +291,7 @@ def demonstrate_multidimensional_handling():
     print("\nKey takeaways:")
     print("  - TopSpeed arrays are automatically detected and converted to JSON")
     print("  - Both single-field and multi-field arrays are supported")
-    print("  - Data types are preserved (null vs zero, boolean values)")
+    print("  - Data types are preserved (null vs zero; BYTE arrays stay integers)")
     print("  - SQLite JSON functions can be used to query array data")
     print("  - Enhanced type mapping supports all TopSpeed field types")
     print("  - Generic binary data detection handles misidentified STRING fields")

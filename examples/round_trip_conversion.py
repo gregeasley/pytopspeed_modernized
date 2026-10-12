@@ -7,9 +7,10 @@ This script demonstrates the complete round-trip conversion:
 2. Convert SQLite back to TopSpeed files
 3. Compare the results
 
-Note: The reverse conversion creates simplified TopSpeed files that may not
-be fully compatible with the original TopSpeed format, but demonstrate
-the conversion capability.
+Note: Reverse conversion needs a SQLite database created by this version of
+the converter (it relies on the hidden _topspeed_* metadata tables). The
+TopSpeed files it writes keep their original names (e.g. TxWells.PHD,
+TxWells.mod); a .phz input yields the individual files, not a new .phz.
 """
 
 import os
@@ -21,6 +22,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
 from converter.sqlite_converter import SqliteConverter
+from converter.phz_converter import PhzConverter
 from converter.reverse_converter import ReverseConverter
 
 
@@ -58,7 +60,11 @@ def round_trip_conversion(input_files: list, output_dir: str):
     sqlite_file = os.path.join(output_dir, "intermediate.sqlite")
     converter = SqliteConverter(batch_size=1000, progress_callback=progress_callback)
     
-    if len(input_files) == 1:
+    if len(input_files) == 1 and input_files[0].lower().endswith('.phz'):
+        # .phz archive (zip of .phd/.mod files)
+        results = PhzConverter(batch_size=1000, progress_callback=progress_callback).convert_phz(
+            input_files[0], sqlite_file)
+    elif len(input_files) == 1:
         # Single file conversion
         results = converter.convert(input_files[0], sqlite_file)
     else:

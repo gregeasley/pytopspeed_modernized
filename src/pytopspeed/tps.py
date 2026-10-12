@@ -72,7 +72,8 @@ class TPS:
         decryptor_class=TpsDecryptor,
     ):
         self.filename = filename
-        self.encoding = encoding
+        # STRING fields are decoded with this; TopSpeed files from Clarion apps use cp1251
+        self.encoding = encoding or "cp1251"
         self.password = password
         self.cached = cached
         self.check = check

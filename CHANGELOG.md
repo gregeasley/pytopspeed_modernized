@@ -11,7 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Working reverse conversion**: `ReverseConverter` rebuilds the original TopSpeed file(s) from a converted
   database, including edits. Unchanged rows are written back byte for byte, edited rows keep their record
   numbers, inserted/deleted rows are handled, and index entries and record counts are regenerated. Verified
-  against the TxWells sample: an unedited round trip reproduces every record of the original files.
+  against the TxWells sample: an unedited round trip reproduces every record of the original files, and the
+  rebuilt files (unchanged and edited) open in PHDWin 2.11 and read identically through the SoftVelocity
+  TopSpeed ODBC driver.
 - **TopSpeed writer** (`pytopspeed.tpswriter`): builds files from raw records (prefix- and RLE-compressed
   pages, B-tree control pages with separator keys, file header), plus index-key, data, memo and metadata
   record builders.
@@ -51,6 +53,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Table definition fallback**: `_get_table_definition_robust` returns a minimal definition when enhanced
   parsing returns nothing or raises, instead of returning `None` or propagating the error.
 - Added the missing `TABLE_DEFINITION_FIELD_STRUCT` import used by field definition parsing.
+- **Files rejected by the TopSpeed driver**: the writer now lays pages out the way TopSpeed allocates them.
+  Header block entry N holds exactly the pages that occupy N 256-byte units (entry 0 stays empty); a single
+  block covering every page made the SoftVelocity driver crash and PHDWin refuse the file. Pages are also kept
+  within TopSpeed's own size limits (unabridged size, records per page), and page compression matches TopSpeed's
+  output byte for byte (repeats only for runs of 4+, closing zero count).
+- `pytopspeed --version` reported `1.0.0`; it now reports the package version.
+- `TPS(filename)` without an `encoding` raised `TypeError` when reading STRING fields; the default is now `cp1251`.
 
 ## [1.1.3] - 2025-01-12
 

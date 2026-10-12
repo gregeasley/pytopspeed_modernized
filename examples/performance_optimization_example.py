@@ -19,6 +19,19 @@ sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 from converter.performance_optimizer import PerformanceOptimizer
 
 
+def progress_callback(current, total, message=""):
+    """Progress callback function.
+
+    Defined at module level so it can be pickled: parallel processing
+    runs files in separate processes.
+    """
+    if total > 0:
+        percentage = (current / total) * 100
+        print(f"\r[{percentage:6.1f}%] {message}", end='', flush=True)
+    else:
+        print(f"\r{message}", end='', flush=True)
+
+
 def main():
     """Main example function."""
     parser = argparse.ArgumentParser(description='Performance Optimization Example')
@@ -45,14 +58,6 @@ def main():
                        help='Output file for performance report')
     
     args = parser.parse_args()
-    
-    def progress_callback(current, total, message=""):
-        """Progress callback function."""
-        if total > 0:
-            percentage = (current / total) * 100
-            print(f"\r[{percentage:6.1f}%] {message}", end='', flush=True)
-        else:
-            print(f"\r{message}", end='', flush=True)
     
     try:
         print("⚡ Performance Optimization Example")

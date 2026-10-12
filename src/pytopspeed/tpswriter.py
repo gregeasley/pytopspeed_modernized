@@ -20,11 +20,19 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 HEADER_SIZE = 0x200
 PAGE_UNIT = 0x100
 PAGE_HEADER_SIZE = 13
+# Header block table entries. Entry N (N >= 1) covers the pages that occupy exactly N page
+# units; entry 0 is always (0, 0).
 BLOCK_COUNT = 60
 
-# Largest uncompressed page we build. Pages written by TopSpeed reach ~12.6KB; staying
-# below that keeps every page within sizes the driver is known to produce.
+# Largest "unabridged" page we build: the page size with every record written out in full
+# (no shared prefixes, 5-byte flags). The driver expands pages to this size, so it is the
+# limit that matters. TopSpeed's own leaf pages reach 12,723 bytes and its control pages
+# 3,962; these caps stay inside both.
 MAX_PAGE_SIZE = 0x2000
+MAX_CONTROL_PAGE_SIZE = 0x1000
+
+# Records (or child pages) per page. TopSpeed's own pages hold at most ~210.
+MAX_PAGE_RECORDS = 180
 
 # Longest prefix a record can share with the previous one (6-bit field)
 MAX_SHARED_PREFIX = 0x3F
@@ -32,8 +40,8 @@ MAX_SHARED_PREFIX = 0x3F
 # Largest count that fits the RLE encoding (15 bits)
 MAX_RLE_COUNT = 0x7FFF
 
-# A run must be at least this long before it is worth a repeat code
-MIN_RLE_RUN = 3
+# TopSpeed only uses a repeat code for runs of at least this many identical bytes
+MIN_RLE_RUN = 4
 
 TOP_SPEED_MARK = b'tOpS\x00\x00'
 
@@ -55,25 +63,29 @@ def rle_decompress(data: bytes) -> bytes:
 
 
 def rle_compress(data: bytes) -> bytes:
-    """Compress with the TopSpeed page RLE scheme (inverse of rle_decompress)"""
+    """
+    Compress with the TopSpeed page RLE scheme (inverse of rle_decompress).
+
+    Matches TopSpeed's own output: a repeat code is used only for runs of MIN_RLE_RUN or
+    more bytes (the literal keeps the run's first byte), and a stream that ends with a
+    repeat is closed with an empty literal group.
+    """
     out = bytearray()
     pos = 0
     length = len(data)
+    ended_with_repeat = False
     while pos < length:
         # Literal bytes run up to and including the first byte of the next worthwhile run
         literal_end = pos
-        run = 0
-        while literal_end < length:
-            run = _run_length(data, literal_end)
-            if run >= MIN_RLE_RUN or literal_end - pos + 1 >= MAX_RLE_COUNT:
+        while literal_end < length and literal_end - pos + 1 < MAX_RLE_COUNT:
+            if _run_length(data, literal_end) >= MIN_RLE_RUN:
                 break
             literal_end += 1
         literal_end = min(literal_end + 1, length)
-        if literal_end - pos > MAX_RLE_COUNT:
-            literal_end = pos + MAX_RLE_COUNT
         out += _write_count(literal_end - pos)
         out += data[pos:literal_end]
         pos = literal_end
+        ended_with_repeat = False
         if pos >= length:
             break
         # Repeat the last literal byte while the run continues
@@ -83,6 +95,9 @@ def rle_compress(data: bytes) -> bytes:
             repeat += 1
         out += _write_count(repeat)
         pos += repeat
+        ended_with_repeat = True
+    if ended_with_repeat:
+        out += _write_count(0)
     return bytes(out)
 
 
@@ -170,18 +185,17 @@ class _Page:
 
 
 def _paginate(items: List[Record], level: int, child_pages: Optional[List[_Page]] = None) -> List[_Page]:
-    """Split items into pages no larger than MAX_PAGE_SIZE"""
+    """Split items into pages whose unabridged size stays within the page limit"""
     ref_size = 4 if child_pages else 0
+    limit = MAX_CONTROL_PAGE_SIZE if child_pages else MAX_PAGE_SIZE
     pages = []
     start = 0
     while start < len(items):
-        # A record's encoding depends only on the record before it, so sizes add up
-        size = PAGE_HEADER_SIZE + ref_size + len(encode_records(items[start:start + 1]))
+        size = PAGE_HEADER_SIZE + ref_size + len(items[start][1]) + 5
         end = start + 1
         while end < len(items):
-            pair = encode_records(items[end - 1:end + 1])
-            step = ref_size + len(pair) - len(encode_records(items[end - 1:end]))
-            if size + step > MAX_PAGE_SIZE:
+            step = ref_size + len(items[end][1]) + 5
+            if size + step > limit or end - start >= MAX_PAGE_RECORDS:
                 break
             size += step
             end += 1
@@ -222,23 +236,34 @@ def build_tps(records: Iterable[Record], last_issued_row: int = 0, change_count:
         keys = [page.first_key for page in below]
         levels.append(_paginate(keys, len(levels), below))
 
-    # Lay pages out on disk in level order; children always get their refs before their parent
-    blobs = []
-    ref = 0
-    for level_pages in levels:
-        for page in level_pages:
-            page.ref = ref
-            blob = page.serialize(HEADER_SIZE + ref * PAGE_UNIT)
-            padded = len(blob) + (-len(blob)) % PAGE_UNIT
-            blobs.append(blob.ljust(padded, b'\x00'))
-            ref += padded // PAGE_UNIT
+    # TopSpeed allocates pages by size class: header block entry N holds only pages that take
+    # exactly N page units, so pages are laid out grouped by their size in units. A page's size
+    # doesn't depend on its child refs (always 4 bytes each), so sizes are known up front.
     root = levels[-1][0]
-    total_refs = ref
+    control_pages = [page for level_pages in reversed(levels[1:]) for page in level_pages]
+    all_pages = [leaves[0]] + control_pages + leaves[1:]
+    spans = {id(page): (len(page.serialize(0)) + PAGE_UNIT - 1) // PAGE_UNIT for page in all_pages}
+    largest = max(spans.values())
+    if largest >= BLOCK_COUNT:
+        raise ValueError(f'Page of {largest} units exceeds the largest size class ({BLOCK_COUNT - 1})')
+    disk_order = sorted(all_pages, key=lambda page: spans[id(page)])  # stable: keeps order within a class
 
+    block_start = [0] * BLOCK_COUNT
+    block_end = [0] * BLOCK_COUNT
+    ref = 0
+    for size_class in range(1, BLOCK_COUNT):
+        block_start[size_class] = ref
+        for page in disk_order:
+            if spans[id(page)] == size_class:
+                page.ref = ref
+                ref += size_class
+        block_end[size_class] = ref
+
+    blobs = [page.serialize(HEADER_SIZE + page.ref * PAGE_UNIT).ljust(spans[id(page)] * PAGE_UNIT, b'\x00')
+             for page in disk_order]
     body = b''.join(blobs)
     file_size = HEADER_SIZE + len(body)
-    block_start = [0] + [total_refs] * (BLOCK_COUNT - 1)
-    block_end = [total_refs] * BLOCK_COUNT
+
     header = struct.pack('<IHII', 0, HEADER_SIZE, file_size, file_size) + TOP_SPEED_MARK
     header += struct.pack('>I', last_issued_row)
     header += struct.pack('<II', change_count, root.ref)

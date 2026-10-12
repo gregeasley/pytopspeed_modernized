@@ -2,9 +2,10 @@
 """
 Example script demonstrating resilient conversion for large databases
 
-This script shows how to use the resilience enhancements for converting
-very large TopSpeed databases with proper memory management, progress
-tracking, and error recovery.
+This script shows the resilience helpers (ResilienceConfig presets,
+estimate_database_size_category, ResilienceEnhancer) next to a normal .phz
+conversion. Note: the converters do not take a ResilienceConfig; the
+configuration chosen below is printed for reference only.
 """
 
 import sys
@@ -71,6 +72,9 @@ def demonstrate_resilient_conversion():
                 category = estimate_database_size_category(estimated_size_mb, estimated_records)
                 print(f"   📈 Estimated size: {estimated_size_mb:.1f}MB, {estimated_records} records")
                 print(f"   🎯 Recommended configuration: {category}")
+
+                # Release the memory-mapped file so the temp directory can be removed
+                tps.tps_file.close()
                 
             else:
                 print("   ⚠️  Could not find PHD file in PHZ archive")
@@ -85,6 +89,7 @@ def demonstrate_resilient_conversion():
     # Get appropriate configuration
     config = get_resilience_config(category)
     print(f"   🔧 Configuration: {config.max_memory_mb}MB memory limit, {config.default_batch_size} batch size")
+    print("   (PhzConverter does not take this configuration; shown for reference)")
     
     # Perform conversion with timing
     print(f"\n3. Starting resilient conversion...")

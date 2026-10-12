@@ -1,106 +1,113 @@
 # Testing Resilience Features
 
-This document describes the comprehensive test suite for the resilience enhancements added to the TopSpeed to SQLite converter.
+This document describes the tests for the resilience helpers (`ResilienceEnhancer`, `ResilienceConfig`) and the related `SqliteConverter` fallback helper methods. See [RESILIENCE_FEATURES.md](RESILIENCE_FEATURES.md) for what these components do.
 
 ## Test Structure
 
-The test suite is organized into three main categories:
+The resilience tests are organized into three categories:
 
 ### 1. Unit Tests (`tests/unit/`)
 
 **Purpose**: Test individual components in isolation
 
 **Files**:
-- `test_resilience_enhancer.py` - Tests for ResilienceEnhancer class
-- `test_resilience_config.py` - Tests for ResilienceConfig class  
-- `test_sqlite_converter_enhancements.py` - Tests for enhanced SQLite converter methods
+- `test_resilience_enhancer.py` - Tests for the ResilienceEnhancer class (42 tests)
+- `test_resilience_config.py` - Tests for the ResilienceConfig class and helper functions (32 tests)
+- `test_sqlite_converter_enhancements.py` - More ResilienceEnhancer checks plus the SqliteConverter fallback helpers `_create_enhanced_table_definition()` and `_get_table_definition_robust()` (28 tests)
 
 **Coverage**:
-- Memory management functions
-- Adaptive batch sizing algorithms
-- Safe data extraction methods
+- Memory checks and cleanup
+- Adaptive batch sizing
+- Safe data extraction
 - Compact JSON creation
-- Size estimation logic
-- Configuration management
-- Error handling and recovery
+- Size estimation and recommendations
+- Configuration presets and size categories
+- Error handling paths
 
 ### 2. Integration Tests (`tests/integration/`)
 
-**Purpose**: Test component interactions and end-to-end scenarios
+**Purpose**: Test the helpers together on realistic scenarios
 
 **Files**:
-- `test_resilience_integration.py` - Integration tests for resilience features
+- `test_resilience_integration.py` - Integration tests for resilience features (16 tests)
 
 **Coverage**:
 - Configuration selection based on database size
 - Adaptive batch sizing with different table types
-- Memory monitoring integration
-- Size estimation with realistic data
+- Memory monitoring
+- Size estimation
 - Streaming decision logic
-- Progress tracking integration
+- Progress tracking
 - Error recovery scenarios
 
 ### 3. Performance Tests (`tests/performance/`)
 
-**Purpose**: Test performance characteristics and scalability
+**Purpose**: Measure the helpers' overhead and behavior with larger inputs
 
 **Files**:
-- `test_resilience_performance.py` - Performance tests for resilience features
+- `test_resilience_performance.py` - Performance tests for resilience features (14 tests, skipped unless `--run-performance` is given)
 
 **Coverage**:
 - Memory usage under different batch sizes
 - Processing speed with various data sizes
-- Scalability with increasing data volumes
-- Concurrent operation performance
-- Memory limit enforcement overhead
-- Batch size optimization impact
+- Scaling with increasing data volumes
+- Concurrent operation
+- Memory limit check overhead
+- Batch size impact
+
+All of these tests use mocks and synthetic data; none of them needs a real TopSpeed file.
 
 ## Running Tests
 
 ### Quick Start
 
+`tests/run_resilience_tests.py` wraps pytest (it runs `python -m pytest`, so `python` must be on your PATH):
+
 ```bash
-# Run all resilience tests
+# Run the unit, integration and performance directories (all tests in them, not only resilience tests)
 python tests/run_resilience_tests.py
 
-# Run specific test types
+# Run only the resilience test files of one type
 python tests/run_resilience_tests.py unit
 python tests/run_resilience_tests.py integration
-python tests/run_resilience_tests.py performance
+python tests/run_resilience_tests.py performance   # collected but skipped: the runner does not pass --run-performance
 
 # Run with verbose output
 python tests/run_resilience_tests.py -v
 
 # Run with coverage reporting
 python tests/run_resilience_tests.py -c
+
+# Run one file / list the available test files
+python tests/run_resilience_tests.py -f tests/unit/test_resilience_config.py
+python tests/run_resilience_tests.py -l
 ```
+
+The runner prints emoji status lines; on a Windows console with a legacy code page set `PYTHONIOENCODING=utf-8` first.
 
 ### Using pytest directly
 
 ```bash
-# Run all unit tests
-pytest tests/unit/ -v
+# Run the resilience unit tests
+python -m pytest tests/unit/test_resilience_enhancer.py tests/unit/test_resilience_config.py tests/unit/test_sqlite_converter_enhancements.py -v
 
-# Run specific test file
-pytest tests/unit/test_resilience_enhancer.py -v
+# Run a specific test method
+python -m pytest tests/unit/test_resilience_enhancer.py::TestResilienceEnhancer::test_initialization -v
 
-# Run specific test method
-pytest tests/unit/test_resilience_enhancer.py::TestResilienceEnhancer::test_initialization -v
-
-# Run with coverage
-pytest tests/unit/ --cov=src/converter --cov-report=html
+# Run all unit tests with coverage
+python -m pytest tests/unit/ --cov=src/converter --cov-report=html
 ```
 
 ### Performance Tests
 
-Performance tests are marked and can be skipped by default:
+Tests under `tests/performance/` are skipped by default (`tests/conftest.py` skips any test with the `performance` keyword, which includes everything in that directory):
 
 ```bash
-# Run performance tests (requires --run-performance flag)
-pytest tests/performance/ --run-performance
+# Run performance tests
+python -m pytest tests/performance/ --run-performance
 
-# Skip performance tests (default behavior)
-pytest tests/performance/
+# Default: collected and skipped
+python -m pytest tests/performance/
 ```
 
 ## Test Categories
@@ -108,82 +115,56 @@ pytest tests/performance/
 ### Unit Test Categories
 
 #### ResilienceEnhancer Tests
-- **Initialization**: Test constructor with various parameters
-- **Memory Management**: Test memory monitoring and cleanup
-- **Adaptive Batch Sizing**: Test batch size calculation for different table types
-- **Data Extraction**: Test safe raw data extraction with fallbacks
-- **JSON Creation**: Test compact JSON creation with various data sizes
-- **Size Estimation**: Test table size estimation algorithms
-- **Streaming Decisions**: Test streaming recommendation logic
-- **Progress Logging**: Test progress tracking functionality
+- **Initialization**: Constructor with default and custom parameters
+- **Memory Management**: `check_memory_usage()` under/over the limit, without psutil, on exceptions; `force_memory_cleanup()`
+- **Adaptive Batch Sizing**: Batch sizes for small, large, very large and complex tables
+- **Data Extraction**: `extract_raw_data_safe()` with fallbacks
+- **JSON Creation**: `create_compact_json()` with various data sizes
+- **Size Estimation**: `estimate_table_size()`, recommendations and optimal batch sizes
+- **Streaming Decisions**: `should_use_streaming()`
+- **Progress Logging**: `log_progress()` enabled, disabled and without a total
 
 #### ResilienceConfig Tests
-- **Configuration Creation**: Test configuration initialization
-- **Predefined Configs**: Test small/medium/large/enterprise configurations
-- **Configuration Validation**: Test configuration consistency
-- **Size Category Estimation**: Test database size category detection
-- **Configuration Conversion**: Test dict conversion and serialization
+- **Configuration Creation**: Defaults and custom values
+- **Predefined Configs**: small/medium/large/enterprise presets
+- **Configuration Consistency**: Relationships between presets
+- **Size Category Estimation**: `estimate_database_size_category()`
+- **Configuration Conversion**: `to_dict()` / `from_dict()`
 
 #### SQLite Converter Enhancement Tests
-- **Enhanced Table Definitions**: Test robust table definition parsing
-- **Memory Management**: Test memory monitoring integration
-- **Batch Processing**: Test adaptive batch sizing integration
-- **Error Recovery**: Test error handling and recovery mechanisms
+- **ResilienceEnhancer methods**: Batch sizing, memory checks, data extraction, compact JSON and size estimation (overlapping the enhancer tests)
+- **Enhanced Table Definitions**: `_create_enhanced_table_definition()` with normal, large-array, insufficient and failing input
+- **Robust Definition Lookup**: `_get_table_definition_robust()` with normal, enhanced and minimal fallbacks
 
 ### Integration Test Categories
 
-#### Configuration Integration
-- **Auto-Detection**: Test automatic configuration selection
-- **Size-Based Selection**: Test configuration selection based on database size
-- **Consistency Validation**: Test configuration consistency across categories
-
-#### Processing Integration
-- **End-to-End Scenarios**: Test complete conversion workflows
-- **Memory Management**: Test memory monitoring during conversion
-- **Progress Tracking**: Test progress reporting during long operations
-- **Error Recovery**: Test error handling during conversion
-
-#### Performance Integration
-- **Scalability Testing**: Test performance with various database sizes
-- **Resource Management**: Test resource usage under different conditions
-- **Concurrent Operations**: Test multi-threaded scenarios
+- **Configuration Selection**: Choosing presets from database size estimates and checking consistency across categories
+- **Batch Sizing and Streaming**: Combined decisions for different table types
+- **Memory and Progress**: Memory checks and progress logging together
+- **Error Recovery**: Behavior when estimation or extraction fails
 
 ### Performance Test Categories
 
-#### Memory Performance
-- **Memory Usage**: Test memory consumption with different batch sizes
-- **Memory Cleanup**: Test garbage collection performance
-- **Memory Monitoring**: Test memory monitoring overhead
-- **Memory Limits**: Test memory limit enforcement
-
-#### Processing Performance
-- **Batch Size Optimization**: Test performance impact of different batch sizes
-- **Data Size Scaling**: Test performance with increasing data sizes
-- **Concurrent Processing**: Test multi-threaded performance
-- **JSON Creation**: Test JSON serialization performance
-
-#### Scalability Performance
-- **Large Data Handling**: Test performance with very large datasets
-- **Resource Scaling**: Test resource usage scaling
-- **Throughput Testing**: Test records per second processing rates
+- **Memory**: Memory use with different batch sizes, cleanup and monitoring overhead
+- **Processing**: Batch size impact, data size scaling, concurrent processing, JSON creation speed
 
 ## Test Data
 
 ### Mock Data Generation
 
-The test suite includes comprehensive mock data generation:
+`tests/conftest.py` provides fixtures with synthetic data, for example:
 
 ```python
-# Binary data of various sizes
-test_data = {
+# sample_binary_data
+{
     'small': b"small data",
     'medium': b"x" * 1000,
     'large': b"x" * 10000,
     'very_large': b"x" * 100000
 }
 
-# Table definitions with different characteristics
-table_defs = {
+# sample_table_definitions
+{
     'small': Mock(record_size=50, field_count=10),
     'medium': Mock(record_size=500, field_count=25),
     'large': Mock(record_size=2000, field_count=50),
@@ -191,120 +172,110 @@ table_defs = {
 }
 ```
 
-### Realistic Test Scenarios
+### Size Scenarios
 
-Tests use realistic scenarios based on actual TopSpeed database characteristics:
+`sample_size_estimates` and the integration tests use the boundaries of `estimate_database_size_category()`:
 
-- **Small Databases**: < 10MB, < 10,000 records
-- **Medium Databases**: 10MB - 1GB, 10,000 - 100,000 records  
-- **Large Databases**: 1GB - 10GB, 100,000 - 1,000,000 records
-- **Enterprise Databases**: > 10GB, > 1,000,000 records
+- **Small**: up to 100 MB and up to 10,000 records
+- **Medium**: more than 100 MB or more than 10,000 records
+- **Large**: more than 1,000 MB or more than 100,000 records
+- **Enterprise**: more than 10,000 MB or more than 1,000,000 records
 
 ## Test Configuration
 
 ### Pytest Configuration
 
-The test suite uses `conftest.py` for shared configuration:
+`tests/conftest.py` registers markers and options:
 
 ```python
 # Custom markers
-@pytest.mark.performance  # Performance tests
-@pytest.mark.slow        # Slow running tests
-@pytest.mark.memory      # Memory intensive tests
+@pytest.mark.performance    # Performance tests
+@pytest.mark.slow           # Slow running tests
+@pytest.mark.memory         # Memory intensive tests
+@pytest.mark.real_topspeed  # Use the real TPS reader instead of the default mocks
 
 # Custom options
 --run-performance        # Enable performance tests
---memory-limit=500       # Set memory limit for tests
+--memory-limit=500       # Defined, but not currently used by any test
 ```
+
+`pyproject.toml` additionally declares the `slow`, `integration` and `unit` markers and runs pytest with `--strict-markers`.
 
 ### Test Fixtures
 
 Common fixtures are provided for:
 
-- **Temporary Directories**: For test file creation
-- **Mock TPS Objects**: For TopSpeed file simulation
-- **Table Definitions**: For various table types
-- **Binary Data**: For different data sizes
-- **Size Estimates**: For database size simulation
+- **Temporary Directories**: `temp_dir`, `test_data_dir`, `temp_sqlite_db`
+- **Mock TPS Objects**: `mock_tps`, `sample_tps`
+- **Table Definitions**: `mock_table_def`, `sample_table_def`, `sample_table_definitions`
+- **Binary Data**: `sample_binary_data`
+- **Size Estimates**: `sample_size_estimates`
+- **System Mocks**: `mock_psutil_process`, `mock_gc`
+- **Data Generator**: `test_data_generator`
 
-## Coverage Goals
+An autouse fixture replaces `TPS.__init__` and `TpsRecordsList` with mocks for every test that is not marked `real_topspeed`.
 
-### Unit Test Coverage
-- **Target**: 95%+ line coverage
-- **Focus**: All public methods and edge cases
-- **Exclusions**: External dependencies and error paths
+## Coverage
 
-### Integration Test Coverage
-- **Target**: 90%+ scenario coverage
-- **Focus**: Component interactions and workflows
-- **Exclusions**: External system dependencies
-
-### Performance Test Coverage
-- **Target**: 80%+ performance scenario coverage
-- **Focus**: Scalability and resource usage
-- **Exclusions**: Hardware-specific optimizations
+There are no enforced coverage thresholds for these tests. Generate a report with `--cov=src/converter --cov-report=html` (or `-c` with the runner) to check coverage locally.
 
 ## Continuous Integration
 
-### GitHub Actions Integration
-
-The test suite is designed to work with CI/CD pipelines:
+The GitHub Actions workflow (`.github/workflows/ci.yml`) runs the unit tests only, which include the resilience unit tests:
 
 ```yaml
-# Example GitHub Actions workflow
-- name: Run Unit Tests
-  run: pytest tests/unit/ --cov=src/converter --cov-report=xml
+- name: Test with pytest
+  run: |
+    pytest tests/unit/ -v --cov=src --cov-report=xml --cov-report=html
+```
 
-- name: Run Integration Tests  
-  run: pytest tests/integration/
+The integration and performance tests are not run in CI; run them locally:
 
-- name: Run Performance Tests
-  run: pytest tests/performance/ --run-performance
+```bash
+python -m pytest tests/integration/
+python -m pytest tests/performance/ --run-performance
 ```
 
 ### Test Reporting
 
-Tests generate comprehensive reports:
-
-- **Coverage Reports**: HTML and XML coverage reports
-- **Performance Reports**: Timing and memory usage reports
-- **Test Results**: Detailed test result summaries
+- **Coverage Reports**: HTML and XML coverage reports when run with `--cov`
+- **Test Results**: Standard pytest output
 
 ## Debugging Tests
 
 ### Common Issues
 
-1. **Import Errors**: Ensure `src/` is in Python path
-2. **Mock Failures**: Check mock object configurations
-3. **Performance Failures**: Verify system resources
+1. **Import Errors**: Ensure `src/` is on the Python path (the test modules add it themselves)
+2. **Mock Failures**: Check mock object configurations; remember the autouse TPS mock
+3. **Performance Failures**: Verify system resources; timings depend on the machine
 4. **Memory Issues**: Check memory limits and cleanup
 
 ### Debug Commands
 
 ```bash
 # Run with debug output
-pytest tests/unit/ -v -s --tb=long
+python -m pytest tests/unit/ -v -s --tb=long
 
-# Run specific test
-pytest tests/unit/test_resilience_enhancer.py::TestResilienceEnhancer::test_memory_usage -v -s
+# Run a specific test
+python -m pytest tests/unit/test_resilience_enhancer.py::TestResilienceEnhancer::test_check_memory_usage_over_limit -v -s
 
 # Run with pdb debugger
-pytest tests/unit/ --pdb
+python -m pytest tests/unit/ --pdb
 ```
 
 ## Test Maintenance
 
 ### Adding New Tests
 
-1. **Unit Tests**: Add to appropriate test file in `tests/unit/`
+1. **Unit Tests**: Add to the appropriate test file in `tests/unit/`
 2. **Integration Tests**: Add to `tests/integration/test_resilience_integration.py`
 3. **Performance Tests**: Add to `tests/performance/test_resilience_performance.py`
+4. **Test data**: Use synthetic data only (mocks, or `tests/unit/tps_builder.py` for real TopSpeed files with `pytest.mark.real_topspeed`); the TxWells sample files are not available in CI
 
 ### Test Naming Conventions
 
 - **Test Classes**: `Test{ComponentName}`
 - **Test Methods**: `test_{functionality}_{scenario}`
-- **Fixtures**: `{purpose}_fixture`
 
 ### Test Documentation
 
@@ -326,18 +297,16 @@ pytest tests/unit/ --pdb
 - **Verification**: Verify mock interactions when important
 
 ### Performance Testing
-- **Baseline**: Establish performance baselines
-- **Tolerance**: Use reasonable performance tolerances
+- **Tolerance**: Use generous tolerances; timings vary by machine
 - **Resources**: Consider system resource limitations
 - **Reproducible**: Ensure tests are reproducible
 
 ## Conclusion
 
-The resilience feature test suite provides comprehensive coverage of:
+The resilience test suite covers:
 
-- **Functionality**: All resilience features are thoroughly tested
-- **Integration**: Component interactions are validated
-- **Performance**: Scalability and resource usage are verified
-- **Reliability**: Error handling and recovery are tested
+- **Functionality**: The public methods of `ResilienceEnhancer` and `ResilienceConfig`
+- **Integration**: The helpers used together on simulated database sizes
+- **Performance**: Overhead of the helpers (opt-in with `--run-performance`)
 
-This ensures that the resilience enhancements work correctly across all supported scenarios and database sizes, from small test databases to enterprise-scale production systems.
+Because the converters do not use these helpers yet, these tests do not exercise real conversions; conversion behavior is covered by the converter, record codec, writer and reverse converter tests.

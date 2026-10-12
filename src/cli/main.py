@@ -16,6 +16,7 @@ from typing import List, Optional
 # Add the src directory to the path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from cli import __version__
 from converter.sqlite_converter import SqliteConverter
 from converter.phz_converter import PhzConverter
 from converter.reverse_converter import ReverseConverter
@@ -226,7 +227,7 @@ Examples:
         """
     )
     
-    parser.add_argument('--version', action='version', version='pytopspeed modernized 1.0.0')
+    parser.add_argument('--version', action='version', version=f'pytopspeed modernized {__version__}')
     parser.add_argument('-v', '--verbose', action='store_true', help='Enable verbose logging')
     parser.add_argument('-q', '--quiet', action='store_true', help='Suppress progress output')
     

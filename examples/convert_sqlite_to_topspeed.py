@@ -4,6 +4,13 @@ Example script: Convert SQLite database back to TopSpeed files
 
 This script demonstrates how to use the ReverseConverter to convert
 SQLite databases back to TopSpeed .phd and .mod files.
+
+The SQLite database must have been created by this version of the converter
+(convert_phd_to_sqlite.py, convert_combined_to_sqlite.py,
+convert_phz_to_sqlite.py or `pytopspeed convert`): it contains hidden
+_topspeed_* metadata tables that the reverse conversion needs. The TopSpeed
+files are written with their original names (e.g. TxWells.PHD and
+TxWells.mod); a database created from a .phz yields the individual files.
 """
 
 import os

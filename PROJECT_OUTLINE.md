@@ -1,13 +1,15 @@
 # Clarion TopSpeed (.phd) to SQLite Database Converter
 
 ## Project Overview
-This project aims to modernize and extend the existing [pytopspeed library](https://github.com/dylangiles/pytopspeed/) to convert Clarion TopSpeed database files (.phd) into SQLite databases. The conversion will preserve data integrity, handle various data types, and provide a robust migration path from legacy Clarion systems.
+This project modernizes and extends the existing [pytopspeed library](https://github.com/dylangiles/pytopspeed/) to convert Clarion TopSpeed database files (.phd, .mod, .tps, .phz) into SQLite databases and back. The conversion preserves data integrity, handles the TopSpeed data types, and provides a migration path from legacy Clarion systems.
 
-## 🎯 Current Status: **Phase 8.2 Complete - Quality Assurance Testing Successfully Completed**
+## 🎯 Current Status: **Forward and Reverse Conversion Complete - Validated in PHDWin**
+
+Package `pytopspeed-modernized` version 1.1.3; the reverse-conversion rewrite and forward-conversion fixes are unreleased (listed under [Unreleased] in CHANGELOG.md).
 
 ### ✅ **Completed Phases:**
 - **Phase 1**: Research and Analysis - **COMPLETE**
-- **Phase 2**: Development Environment Setup - **COMPLETE** 
+- **Phase 2**: Development Environment Setup - **COMPLETE**
 - **Phase 3**: Modernize and Extend pytopspeed - **COMPLETE**
 - **Phase 4**: SQLite Integration - **COMPLETE**
 - **Phase 5.1**: Unit Testing - **COMPLETE**
@@ -17,56 +19,34 @@ This project aims to modernize and extend the existing [pytopspeed library](http
 - **Phase 6.2**: Documentation - **COMPLETE**
 - **Phase 7.1**: Enhanced Functionality - **COMPLETE**
 - **Phase 7.2**: Error Handling and Recovery - **COMPLETE**
+- **Phase 8.1**: Packaging and CI - **COMPLETE**
+- **Phase 8.2**: Quality Assurance - **COMPLETE**
+- **Phase 9**: Lossless forward conversion and TopSpeed writer (reverse conversion) - **COMPLETE**
 
 ### 🔄 **Current Phase:**
-- **Phase 8.3**: Final Documentation and Release - **READY TO START**
+- **Release** of the unreleased reverse-conversion and forward-conversion changes, and documentation review
 
 ### 📊 **Key Achievements:**
-- ✅ Successfully modernized pytopspeed library for construct 2.10+
-- ✅ Confirmed .phd files use identical format to .tps files
-- ✅ Successfully parsed 96 tables from sample database
-- ✅ Extracted real business data with 40+ fields per table
-- ✅ All TopSpeed data types working correctly
-- ✅ **Enhanced memo/BLOB handling** - Added MEMO record type (0xFC) support
-- ✅ **Successfully retrieved memo data** - Real text content from database
-- ✅ **Fixed table name parsing** - Complete table names extracted (ADJOWNER, ALLOCDAT, etc.)
-- ✅ **Fixed table definition parsing** - All 55 tables now have proper definitions
-- ✅ **Created schema mapper** - TopSpeedToSQLiteMapper class with full functionality
-- ✅ **Generated SQLite schema** - 55 tables and indexes successfully created
-- ✅ **Created SQLite converter** - SqliteConverter class with complete data migration
-- ✅ **Successfully migrated 7,601 records** from 55 tables in 5.99 seconds
-- ✅ **Complete data type conversion** - All TopSpeed types properly converted to SQLite
-- ✅ **Clean column names** - No table prefixes (PROJ_DESCR, not TIT_PROJ_DESCR)
-- ✅ **Production-ready converter** - Batch processing, transactions, progress tracking
-- ✅ **Comprehensive unit test suite** - 354 passing tests covering all components with 100% pass rate
-- ✅ **Test infrastructure** - Proper fixtures, mocks, and test configuration
-- ✅ **Complete file format support** - .phd, .mod, and .tps files all working
-- ✅ **Dual database testing** - Both TxWells.PHD (5,027 records) and TxWells.mod (5,097 records) successfully converted
-- ✅ **Comprehensive integration test suite** - End-to-end conversion testing for both .phd and .mod files
-- ✅ **Performance benchmarking** - Optimized batch processing with 1,000 record batches for best performance
-- ✅ **Data integrity verification** - Complete validation of converted SQLite databases
-- ✅ **Error handling robustness** - Graceful handling of parsing errors and data conversion issues
-- ✅ **Memory efficiency** - Optimized memory usage with configurable batch sizes
-- ✅ **Performance metrics** - PHD: 1,341 records/sec, MOD: 2,579 records/sec
-- ✅ **Comprehensive unit test coverage** - 354 total unit tests including new features (I1, I2, I3) with 100% pass rate
-- ✅ **New feature validation** - Complete test coverage for combined conversion, PHZ support, and reverse conversion
-- ✅ **Robust test infrastructure** - Mock-based testing with proper isolation and fast execution
-- ✅ **Professional CLI interface** - Complete command-line tool with convert, reverse, and list commands
-- ✅ **Multi-format support** - Seamless handling of .phd, .mod, .tps, and .phz files
-- ✅ **Round-trip conversion** - Full conversion cycle: TopSpeed → SQLite → TopSpeed
-- ✅ **Progress tracking** - Real-time progress reporting with detailed logging
-- ✅ **Test infrastructure** - Automated test runners and comprehensive test coverage
-- ✅ **Comprehensive documentation** - Complete user guides, API docs, troubleshooting, and developer resources
-- ✅ **Professional documentation** - Installation guides, examples, and contribution guidelines
-- ✅ **Community-ready** - Documentation suitable for open-source community contribution
-- ✅ **Advanced batch processing** - Comprehensive system for handling multiple TopSpeed files with relationship analysis
-- ✅ **Data validation framework** - Complete validation system with accuracy verification and comparison reports
-- ✅ **Performance optimization** - Parallel processing, memory-efficient streaming, and intelligent caching
-- ✅ **Cross-file relationship detection** - Automatic analysis of table overlaps and schema similarities
-- ✅ **Comprehensive reporting** - Detailed batch processing and validation reports
-- ✅ **Memory management** - Configurable memory limits and efficient streaming data processing
-- ✅ **Parallel processing** - Multi-threaded and multi-process support for improved performance
-- ✅ Python 3.11 compatibility confirmed
+- ✅ Modernized the pytopspeed library for construct 2.10+ and Python 3.8-3.12
+- ✅ Confirmed .phd and .mod files use the TopSpeed (.tps) format
+- ✅ **Forward conversion (TopSpeed → SQLite)** - Tables with a parsed definition are decoded by a record codec: scalar columns named after the field (without the `PRE:` prefix), DIM fields and members of dimensioned GROUPs as JSON arrays, numbered fields (NAME1..NAMEn) as one array, memos as text, BYTE values (including arrays) as integers, NaN/inf as NULL
+- ✅ **Validated against reference CSV exports** - FORCAST (3,246,908 cells; 2 differ where the file holds NaN and the export 0), MONHIST, CUMVOL and LSEPRODVAL match
+- ✅ **Sample conversions** - TxWells.PHD: 55 tables / 9,492 rows; TxWells.mod: 21 tables / 5,267 rows
+- ✅ **Reverse conversion (SQLite → TopSpeed)** - New TopSpeed writer; databases created by this version keep hidden `_topspeed_*` metadata so files are rebuilt under their original names, with unchanged rows written back byte for byte, edited/inserted/deleted rows applied, and indexes and record counts regenerated
+- ✅ **Validated in PHDWin** - Unedited TxWells round trip reproduces every record (21,986 PHD / 16,770 mod records); unchanged and edited copies opened in PHDWin 2.11 and read identically by the SoftVelocity TopSpeed ODBC driver
+- ✅ **Multi-format support** - .phd, .mod, .tps and .phz files; several files combine into one database with `phd_`/`mod_`/`tps_` table prefixes
+- ✅ **CLI** - `pytopspeed convert`, `reverse` and `list`
+- ✅ **Test suite** - 358 unit tests and 18 integration tests passing (376 total); 14 performance tests run with `--run-performance`; tests use synthetic TopSpeed files (`tests/unit/tps_builder.py`), not the TxWells samples
+- ✅ **CI** - GitHub Actions on Python 3.8-3.12: flake8 (blocking error checks), mypy (report-only), unit tests with coverage, package build and `twine check`, TestPyPI upload on pull requests, PyPI publish on release
+- ✅ **Supporting modules** - Batch processing, data validation, performance optimization, error handling/robust conversion and resilience helpers (see examples/README.md for modules with known issues)
+- ✅ **Documentation** - User guide, API docs, troubleshooting, developer guide and examples
+
+### ⚠️ **Known Issues:**
+- `BatchProcessor`, `DataValidator` and `PerformanceOptimizer` fail on the TxWells samples (see examples/README.md)
+- The resilience helpers (`ResilienceConfig`, `ResilienceEnhancer`) are not used by the converters
+- `PhzConverter` cannot delete its temporary extraction folder on Windows and logs a warning
+- `-q` does not silence log output, and log lines are printed twice
+- Tables whose definition cannot be parsed use the older fallback path; reverse conversion writes them back unchanged and ignores edits (with a warning)
 
 ## Analysis of Existing pytopspeed Library
 
@@ -87,7 +67,7 @@ The pytopspeed library provides a solid foundation with:
 5. **`tpscrypt.py`**: Encryption/decryption functionality
 6. **`utils.py`**: Utility functions for validation
 
-### Limitations for .phd Files
+### Original Limitations (addressed by this project)
 - Currently designed for .tps files, may need adaptation for .phd format
 - Uses older dependencies (`six`, `construct>=2.5`) that need modernization
 - No direct SQLite export functionality
@@ -129,7 +109,7 @@ The pytopspeed library provides a solid foundation with:
 ## Phase 2: Development Environment Setup
 
 ### 2.1 Project Structure
-- [x] **Create project directory structure**
+- [x] **Create project directory structure** (original plan; see docs/DEVELOPER.md for the current layout)
   ```
   pytopspeed_modernized/
   ├── src/
@@ -242,10 +222,10 @@ The pytopspeed library provides a solid foundation with:
 
 **Key Achievements:**
 - ✅ Created `SqliteConverter` class with comprehensive functionality
-- ✅ Implemented batch processing (100 records per batch) for efficiency
-- ✅ Added transaction management with WAL mode and proper commit/rollback
+- ✅ Implemented batch inserts (configurable batch size, default 1,000 records)
+- ✅ Added transaction management with commit/rollback
 - ✅ Implemented real-time progress tracking with callback support
-- ✅ Successfully migrated 7,601 records from 55 tables in 5.99 seconds
+- ✅ Successfully migrated 7,601 records from 55 tables in 5.99 seconds (initial version; the current converter migrates all 9,492 TxWells.PHD rows)
 - ✅ Complete data type conversion (STRING→TEXT, LONG→INTEGER, DOUBLE→REAL, etc.)
 - ✅ Enhanced memo/BLOB field processing with proper data retrieval
 - ✅ Clean column names without table prefixes (PROJ_DESCR, not TIT_PROJ_DESCR)
@@ -269,7 +249,7 @@ The pytopspeed library provides a solid foundation with:
   - ✅ Test error handling
 
 **Key Achievements:**
-- ✅ Created comprehensive unit test suite with 354 passing tests (100% pass rate)
+- ✅ Created comprehensive unit test suite (354 tests at the time; 358 unit tests today)
 - ✅ **Parser Tests**: 25 tests covering TPS file loading, page structure, record parsing, table definitions, data types, and iteration
 - ✅ **Schema Mapper Tests**: 18 tests covering type mapping, field/table name sanitization, SQL generation, and schema mapping
 - ✅ **SQLite Converter Tests**: 16 tests covering initialization, field value conversion, record conversion, schema creation, data migration, progress callbacks, and error handling
@@ -313,15 +293,13 @@ The pytopspeed library provides a solid foundation with:
   - Validate temporary directory cleanup
   - Test error handling for invalid files
 
-- [x] **Reverse converter tests (I3)**
-  - Test SQLite to TopSpeed conversion
-  - Verify table separation by prefixes
-  - Test binary data conversion
-  - Validate encoding handling
-  - Test file header creation
+- [x] **Reverse converter tests (I3)** (rewritten with the Phase 9 reverse converter)
+  - Round trips of synthetic TopSpeed files built by `tests/unit/tps_builder.py`
+  - Edited, inserted and deleted rows; memos; index regeneration
+  - Error cases (missing metadata, duplicate unique keys, values that don't fit)
 
 #### Key Achievements - Phase 5.3
-- **Comprehensive test coverage** - 354 total unit tests across all components with 100% pass rate
+- **Comprehensive test coverage** - 354 unit tests at the time (358 today), all passing
 - **New feature validation** - Complete test coverage for I1, I2, and I3 features
 - **Robust error handling** - Tests for edge cases, invalid inputs, and error conditions
 - **Mock-based testing** - Proper isolation and fast test execution
@@ -347,7 +325,7 @@ The pytopspeed library provides a solid foundation with:
 - **Error handling** - Robust error handling with clear error messages and graceful failure recovery
 - **Flexible output** - Supports both single file and combined database conversions
 - **PHZ file support** - Built-in support for .phz (zip) archives containing TopSpeed files
-- **Reverse conversion** - Complete round-trip conversion from SQLite back to TopSpeed files
+- **Reverse conversion** - Round-trip conversion from SQLite back to TopSpeed files (rewritten in Phase 9)
 - **User-friendly interface** - Clear help text, examples, and intuitive command structure
 
 ### 6.2 Documentation - **COMPLETE** ✅
@@ -397,7 +375,7 @@ The pytopspeed library provides a solid foundation with:
 - **Comprehensive reporting** - Detailed batch processing and validation reports
 - **Memory management** - Configurable memory limits and efficient streaming data processing
 - **Parallel processing** - Multi-threaded and multi-process support for improved performance
-- **100% test coverage** - All 354 unit tests passing with comprehensive test suite
+- **Passing test suite** - All 354 unit tests passing at the time
 - **Edge case handling** - Robust error handling and data comparison logic
 
 #### Key Achievements - Phase 7.2
@@ -407,7 +385,7 @@ The pytopspeed library provides a solid foundation with:
 - **Backup and checkpoint system** - Automatic backup creation and state checkpointing for recovery
 - **Detailed error reporting** - Comprehensive error reports with statistics and recommendations
 - **Context manager support** - Proper resource cleanup and exception handling
-- **100% test coverage** - All 354 error handling and robust converter tests passing
+- **Passing test suite** - Error handling and robust converter tests passing
 
 #### Key Achievements - Phase 8.1
 - **Comprehensive packaging system** - Complete setup.py, pyproject.toml, and setup.cfg configuration
@@ -420,13 +398,13 @@ The pytopspeed library provides a solid foundation with:
 
 #### Key Achievements - Phase 8.2
 - **Comprehensive QA testing framework** - Complete quality assurance testing system with multiple test suites
-- **Cross-platform compatibility verified** - All 39 compatibility tests passed on Windows platform
+- **Cross-platform compatibility** - Compatibility checks run on Windows; CI runs the unit tests on Ubuntu with Python 3.8-3.12
 - **Performance and stress testing** - System handles concurrent operations and memory stress successfully
 - **Error handling and recovery** - Robust error handling mechanisms verified under stress conditions
 - **Data integrity validation** - All conversion processes maintain data integrity and accuracy
 - **CLI functionality verified** - All command-line interface features working correctly
 - **Import and module loading** - All core modules and dependencies load without issues
-- **Unicode and encoding support** - Full Unicode support across all platforms and file operations
+- **Encoding support** - TopSpeed strings decoded as cp1251 and stored as Unicode text in SQLite
 
 ### 7.2 Error Handling and Recovery - COMPLETE ✅
 - [x] **Robust error handling**
@@ -441,7 +419,7 @@ The pytopspeed library provides a solid foundation with:
 - [x] **Create distribution package**
   - Setup.py configuration
   - Wheel distribution
-  - PyPI publication
+  - PyPI publication (automated on GitHub release)
 
 ### 8.2 Quality Assurance - COMPLETE ✅
 - [x] **Final testing**
@@ -450,15 +428,30 @@ The pytopspeed library provides a solid foundation with:
   - Stress testing with large files
   - User acceptance testing
 
+## Phase 9: Lossless Conversion and Reverse Conversion - COMPLETE ✅
+
+- [x] **Forward conversion fixes**
+  - Record codec for every table whose definition pytopspeed parses (all TxWells tables); table definitions joined in portion order
+  - Array layout: DIM fields, dimensioned GROUP members and numbered fields as JSON arrays; BYTE values as integers
+  - Validated against reference CSV exports (FORCAST, MONHIST, CUMVOL, LSEPRODVAL)
+- [x] **TopSpeed writer and reverse converter**
+  - Hidden `_topspeed_*` metadata tables store the original records so files can be rebuilt
+  - Page layout, B-tree, RLE compression, size-class block table and index keys reproduced as TopSpeed writes them
+  - Edits applied: changed columns re-encoded, inserted rows get new record numbers, deleted rows dropped, indexes regenerated, unique-key violations reported
+- [x] **Validation**
+  - Unedited TxWells round trip reproduces every record (21,986 PHD / 16,770 mod)
+  - Unchanged and edited files opened in PHDWin 2.11 and read by the SoftVelocity TopSpeed ODBC driver
+  - Synthetic-file unit tests for the writer, record codec, array schema and reverse converter
+
 ## Success Criteria
 
-- [ ] Successfully parse and extract data from .phd files
-- [ ] Convert all data types accurately to SQLite format
-- [ ] Maintain data integrity and relationships
-- [ ] Provide clear error messages and logging
-- [ ] Achieve reasonable performance for large datasets
-- [ ] Deliver comprehensive documentation
-- [ ] Ensure cross-platform compatibility
+- [x] Successfully parse and extract data from .phd files
+- [x] Convert all data types accurately to SQLite format
+- [x] Maintain data integrity and relationships
+- [x] Provide clear error messages and logging
+- [ ] Achieve reasonable performance for large datasets (not benchmarked beyond the sample files)
+- [x] Deliver comprehensive documentation
+- [x] Ensure cross-platform compatibility (CI on Ubuntu; development and PHDWin validation on Windows)
 
 ## Risk Mitigation
 
@@ -481,4 +474,4 @@ The pytopspeed library provides a solid foundation with:
 
 ---
 
-*This outline provides a comprehensive roadmap for developing a robust Clarion TopSpeed to SQLite converter. Each phase builds upon the previous one, ensuring a systematic approach to this complex reverse engineering and data migration project.*
+*This outline began as the roadmap for the Clarion TopSpeed to SQLite converter and is kept as the project status record. The timeline above is the original estimate.*

@@ -1,115 +1,131 @@
 # Resilience Features for Large Database Conversions
 
-This document describes the comprehensive resilience features added to handle very large TopSpeed databases that may exceed normal memory and processing limits.
+This document describes the resilience helpers in `src/converter/` intended for large TopSpeed databases, and how they relate to the converters.
+
+> **Important:** `ResilienceConfig` and `ResilienceEnhancer` are standalone helper classes. `SqliteConverter`, `PhzConverter` and `ReverseConverter` do **not** accept a `ResilienceConfig` and do not call `ResilienceEnhancer`; choosing a configuration does not change how the converters run. The settings that do affect a conversion are listed under [What the converters do](#3-what-the-converters-do).
 
 ## Overview
 
-The resilience enhancements provide:
+The resilience helpers provide:
 
-- **Memory Management**: Intelligent memory monitoring and cleanup
-- **Adaptive Processing**: Dynamic batch sizing based on table characteristics
-- **Progress Tracking**: Detailed progress monitoring for long-running conversions
-- **Error Recovery**: Robust error handling with partial conversion support
-- **Performance Optimization**: Configurable settings for different database sizes
-- **Resource Monitoring**: Real-time resource usage tracking
+- **Memory Checks**: Compare the process memory (via `psutil`) with a limit and force garbage collection
+- **Adaptive Batch Sizes**: Suggest batch sizes from a table's record size and field count
+- **Size Estimation**: Estimate a table's record count by sampling leaf pages
+- **Configuration Presets**: Predefined settings for small, medium, large and enterprise databases
+- **Progress Logging**: Log progress messages for long operations
 
 ## Key Components
 
 ### 1. ResilienceEnhancer (`src/converter/resilience_enhancements.py`)
 
-The core resilience engine that provides:
+`ResilienceEnhancer(max_memory_mb=500, enable_progress_tracking=True)`
 
 #### Memory Management
-- **Memory Monitoring**: Real-time memory usage tracking using `psutil`
-- **Automatic Cleanup**: Garbage collection at configurable intervals
-- **Memory Limits**: Configurable maximum memory usage thresholds
+- **`check_memory_usage()`**: Returns `True` (and logs a warning) when the process RSS exceeds `max_memory_mb`; returns `False` if `psutil` is unavailable or the check fails
+- **`force_memory_cleanup()`**: Runs `gc.collect()`
 
 #### Adaptive Batch Sizing
-- **Dynamic Sizing**: Batch size automatically adjusts based on:
-  - Record size (larger records = smaller batches)
-  - Field count (more fields = smaller batches)
-  - Table complexity
-- **Size Ranges**:
-  - Very large records (>10KB): 5-10 records per batch
-  - Large records (>5KB): 10-25 records per batch
-  - Medium records (>1KB): 25-50 records per batch
-  - Small records (<100B): 100-400 records per batch
+`get_adaptive_batch_size(table_def)` starts from 100 and checks `table_def.record_size` first, then `table_def.field_count`:
+
+| Condition | Batch size |
+|-----------|------------|
+| record size > 10,000 bytes | 5 |
+| record size > 5,000 bytes | 10 |
+| record size > 1,000 bytes | 25 |
+| record size < 100 bytes | 400 |
+| field count > 200 | 5 |
+| field count > 100 | 10 |
+| field count > 50 | 50 |
+| otherwise | 100 |
 
 #### Safe Data Extraction
-- **Multiple Fallback Methods**: Tries different approaches to extract raw data
-- **Error Resilience**: Continues processing even if individual records fail
-- **Compact JSON**: Efficient storage of binary data as base64-encoded JSON
+- **`extract_raw_data_safe(record)`**: Tries `record.data.data.data`, `record.data.data`, then `record.data`; returns `None` on failure
+- **`create_compact_json(raw_data, table_name)`**: Stores raw bytes as base64 in compact JSON with the size and table name (plus leading/trailing bytes for larger records)
 
 #### Size Estimation
-- **Pre-conversion Analysis**: Estimates table size before processing
-- **Sampling**: Uses first 10-20 pages to estimate total size
-- **Recommendations**: Suggests optimal processing strategy
+- **`estimate_table_size(tps, table_name)`**: Counts the table's DATA records in up to 20 leaf pages, extrapolates to all leaf pages, and assumes ~3 KB per record for the size estimate. Returns `estimated_records`, `estimated_size_mb`, `sample_pages`, `total_pages`, `recommendation` (`skip`, `normal`, `streaming_low_memory`, `streaming_medium_memory`, `streaming_high_memory`) and `optimal_batch_size` (100, 50, 25 or 10)
+- **`should_use_streaming(table_def, estimated_size)`**: `True` for more than 10,000 estimated records, record size over 2,000 bytes, or more than 100 fields
+
+#### Progress Logging
+- **`log_progress(current, total, table_name, operation="processing")`**: Logs `"<Operation> <table>: current/total (x%)"` when progress tracking is enabled
 
 ### 2. ResilienceConfig (`src/converter/resilience_config.py`)
 
-Configuration management with predefined settings for different database sizes:
+A dataclass of settings with `to_dict()` / `from_dict()`, four preset constructors (`for_small_databases()`, `for_medium_databases()`, `for_large_databases()`, `for_enterprise_databases()`), `get_resilience_config(name)` for `'small'`, `'medium'`, `'large'`, `'enterprise'` or `'default'` (raises `ValueError` for other names), and `estimate_database_size_category(estimated_size_mb, estimated_records)`.
+
+#### Size Categories
+
+`estimate_database_size_category()` returns:
+
+| Category | Condition |
+|----------|-----------|
+| `enterprise` | size > 10,000 MB or records > 1,000,000 |
+| `large` | size > 1,000 MB or records > 100,000 |
+| `medium` | size > 100 MB or records > 10,000 |
+| `small` | otherwise |
+
+(The preset docstrings describe small as "< 10MB" and medium as "10MB - 1GB"; the function above is what the code uses.)
+
+#### Defaults (`ResilienceConfig()`)
+
+`max_memory_mb=500`, `memory_cleanup_interval=1000`, `default_batch_size=100`, `adaptive_batch_sizing=True`, `max_batch_size=1000`, `min_batch_size=5`, `progress_log_interval=100`, `max_consecutive_errors=100`, `enable_partial_conversion=True`, `enable_streaming=True`, `streaming_threshold_records=10000`, `enable_parallel_processing=False`, `max_worker_threads=4`, `sqlite_journal_mode="WAL"`, `sqlite_synchronous="NORMAL"`, `sqlite_cache_size=-2000`, `sqlite_temp_store="MEMORY"`, `large_table_threshold_records=50000`, `large_table_threshold_mb=500.0`, `enable_checkpointing=False`, `checkpoint_interval=10000`, `enable_resume_capability=False`.
 
 #### Predefined Configurations
 
-**Small Databases (< 10MB)**
+**Small** (`for_small_databases()`)
 - Memory limit: 200MB
 - Batch size: 200 records
 - Streaming: Disabled
 - Parallel processing: Disabled
 
-**Medium Databases (10MB - 1GB)**
+**Medium** (`for_medium_databases()`)
 - Memory limit: 500MB
 - Batch size: 100 records
 - Streaming: Enabled (threshold: 5,000 records)
 - Parallel processing: Disabled
 
-**Large Databases (1GB - 10GB)**
-- Memory limit: 1GB
+**Large** (`for_large_databases()`)
+- Memory limit: 1000MB
 - Batch size: 50 records
 - Streaming: Enabled (threshold: 1,000 records)
 - Parallel processing: Enabled (2 threads)
-- Checkpointing: Enabled
+- Checkpointing: Enabled (every 5,000 records)
+- Detailed progress logging: Enabled
 
-**Enterprise Databases (> 10GB)**
-- Memory limit: 2GB
+**Enterprise** (`for_enterprise_databases()`)
+- Memory limit: 2000MB
 - Batch size: 25 records
 - Streaming: Enabled (threshold: 500 records)
 - Parallel processing: Enabled (4 threads)
-- Checkpointing: Enabled
+- Checkpointing: Enabled (every 1,000 records)
 - Resume capability: Enabled
-- SQLite cache: 10MB
+- SQLite cache: `sqlite_cache_size=-10000` (about 10MB)
+- Large-table thresholds: 100,000 records / 1,000 MB
 
-### 3. Enhanced SQLite Converter
+Flags such as streaming, parallel processing, checkpointing and resume are configuration values only; no converter currently implements behavior for them.
 
-The existing converter has been enhanced with:
+### 3. What the converters do
 
-#### Memory-Efficient Processing
-- **Streaming**: Processes records in small batches to minimize memory usage
-- **Periodic Cleanup**: Garbage collection every 1,000 records
-- **Memory Monitoring**: Checks memory usage and triggers cleanup when needed
-
-#### Progress Tracking
-- **Detailed Logging**: Progress updates every 100 records
-- **Page-level Tracking**: Shows progress through database pages
-- **Time Estimation**: Can estimate remaining time for large conversions
-
-#### Error Recovery
-- **Graceful Degradation**: Continues processing even if individual records fail
-- **Partial Conversion**: Saves progress even if conversion is interrupted
-- **Error Logging**: Detailed error reporting for troubleshooting
+`SqliteConverter` (also used by `PhzConverter`):
+- **Batch inserts**: rows are inserted with `executemany` in batches of `batch_size` (default 1000; CLI `--batch-size`)
+- **Progress reporting**: `progress_callback(current, total, message)` per table, or a `Progress: ...` log line when no callback is given
+- **Per-table error isolation**: if a table fails, its inserts are rolled back, the error is logged, and the conversion continues with the next table
+- **Fallback path**: tables whose definition pytopspeed cannot parse are converted by an older multidimensional/enhanced path instead of the record codec
 
 ## Usage Examples
 
-### Basic Usage with Auto-Detection
+### Choosing a Configuration from a Size Estimate
 
 ```python
 from converter.phz_converter import PhzConverter
-from converter.resilience_config import get_resilience_config
+from converter.resilience_config import get_resilience_config, estimate_database_size_category
 
-# Initialize converter
-converter = PhzConverter()
+category = estimate_database_size_category(estimated_size_mb=150, estimated_records=50000)  # 'medium'
+config = get_resilience_config(category)
+print(config.max_memory_mb, config.default_batch_size)  # 500 100
 
-# Convert with automatic configuration selection
+# The converter does not take the config; pass a batch size explicitly if wanted
+converter = PhzConverter(batch_size=1000)
 result = converter.convert_phz('large_database.phz', 'output.sqlite')
 ```
 
@@ -127,100 +143,67 @@ config = ResilienceConfig(
     enable_parallel_processing=True
 )
 
-# Use with converter
+# Use the memory limit with the enhancer
 enhancer = ResilienceEnhancer(max_memory_mb=config.max_memory_mb)
-# ... use enhancer with converter
+if enhancer.check_memory_usage():
+    enhancer.force_memory_cleanup()
 ```
 
-### Enterprise-Scale Conversion
+### Enterprise Preset
 
 ```python
 from converter.resilience_config import get_resilience_config
 
-# Get enterprise configuration
 config = get_resilience_config('enterprise')
 
 # This configuration includes:
-# - 2GB memory limit
+# - 2000MB memory limit
 # - 25 record batches
-# - Parallel processing (4 threads)
-# - Checkpointing every 1,000 records
-# - Resume capability
-# - 10MB SQLite cache
+# - Parallel processing flag (4 threads)
+# - Checkpointing flag, interval 1,000 records
+# - Resume capability flag
+# - sqlite_cache_size=-10000 (about 10MB)
 ```
+
+See `examples/resilient_conversion_example.py` for a runnable demonstration.
 
 ## Performance Characteristics
 
-### Memory Usage
-- **Baseline**: ~50-100MB for small databases
-- **Medium**: ~200-500MB for medium databases
-- **Large**: ~500MB-1GB for large databases
-- **Enterprise**: ~1-2GB for enterprise databases
-
-### Processing Speed
-- **Small databases**: 1,000-5,000 records/second
-- **Medium databases**: 500-2,000 records/second
-- **Large databases**: 100-1,000 records/second
-- **Enterprise databases**: 50-500 records/second
-
-### Scalability Limits
-- **Maximum tested**: 4,370 records in FORCAST table (2,528 bytes each)
-- **Theoretical limit**: Limited by available memory and disk space
-- **Recommended maximum**: 1 million records per table
+No benchmarks for large databases have been published for this project. As a reference point, converting the TxWells sample (TxWells.PHD: 55 tables, 9,492 rows; TxWells.mod: 21 tables, 5,267 rows; FORCAST is the largest table with 4,370 rows) takes a few seconds per file on a desktop machine. Memory use and throughput for larger files depend on table layout and hardware; measure with your own data.
 
 ## Monitoring and Troubleshooting
 
 ### Progress Monitoring
-The system provides detailed progress information:
+Without a progress callback, `SqliteConverter` logs progress per table:
 
 ```
-2025-01-11 14:33:51,152 - SqliteConverter - INFO - Processing page 547
-2025-01-11 14:33:51,152 - SqliteConverter - INFO - Page 547: 0 records found for TITLES
-2025-01-11 14:33:51,153 - SqliteConverter - INFO - Progress: 1000 records migrated from FORCAST
+2026-10-12 12:48:43,560 - SqliteConverter - INFO - Progress: 13/55 (23.6%) - Migrating table: FORCAST
+2026-10-12 12:48:47,785 - SqliteConverter - INFO - Migrated 4370 records from FORCAST
 ```
 
 ### Memory Monitoring
-Memory usage is tracked and reported:
+`ResilienceEnhancer.check_memory_usage()` logs through the `converter.resilience_enhancements` logger:
 
 ```
-2025-01-11 14:33:51,200 - SqliteConverter - WARNING - Memory usage 512.3MB exceeds limit 500MB
-2025-01-11 14:33:51,201 - SqliteConverter - INFO - Forced memory cleanup completed
+Memory usage 512.3MB exceeds limit 500MB
 ```
 
 ### Error Handling
-Errors are logged with context:
+Table-level errors are logged and the conversion continues:
 
 ```
-2025-01-11 14:33:51,202 - SqliteConverter - WARNING - Error processing record in FORCAST: Invalid data format
-2025-01-11 14:33:51,203 - SqliteConverter - INFO - Continuing with next record...
+2026-10-12 12:38:02,202 - SqliteConverter - ERROR - Error migrating data for table FORCAST: <error>
 ```
 
 ## Best Practices
 
-### For Small Databases (< 10MB)
-- Use default configuration
-- No special considerations needed
-- Processing should complete in seconds
-
-### For Medium Databases (10MB - 1GB)
-- Use medium configuration
-- Monitor memory usage
-- Allow 1-10 minutes for conversion
-
-### For Large Databases (1GB - 10GB)
-- Use large configuration
-- Ensure sufficient disk space (2-3x database size)
-- Allow 10-60 minutes for conversion
-- Monitor system resources
-
-### For Enterprise Databases (> 10GB)
-- Use enterprise configuration
-- Ensure 4GB+ RAM available
-- Use SSD storage for better performance
-- Allow 1-6 hours for conversion
-- Consider running during off-peak hours
+- For most files the default converter settings are sufficient
+- Ensure enough free disk space: the SQLite database is considerably larger than the TopSpeed file because it also stores the original record bytes for reverse conversion (TxWells.PHD, about 0.8 MB, becomes a database of about 37 MB)
+- For very large files, lower `--batch-size` if memory is a concern, and monitor system resources
 
 ## Configuration Tuning
+
+These snippets set `ResilienceConfig` values; they matter only to code that reads the configuration.
 
 ### Memory Settings
 ```python
@@ -241,7 +224,7 @@ config = ResilienceConfig(
 ### SQLite Optimization
 ```python
 config = ResilienceConfig(
-    sqlite_cache_size=-10000,  # 10MB cache
+    sqlite_cache_size=-10000,  # about 10MB cache
     sqlite_journal_mode="WAL",  # Write-ahead logging
     sqlite_synchronous="NORMAL",  # Balance safety/speed
 )
@@ -250,40 +233,35 @@ config = ResilienceConfig(
 ## Troubleshooting Common Issues
 
 ### Out of Memory Errors
-- Reduce `max_memory_mb`
-- Decrease `default_batch_size`
-- Enable more frequent `memory_cleanup_interval`
+- Reduce the converter batch size (`SqliteConverter(batch_size=...)` or `--batch-size`)
+- Convert files one at a time instead of combining them
 
 ### Slow Performance
-- Increase `default_batch_size` (if memory allows)
-- Enable `enable_parallel_processing`
-- Use SSD storage
-- Increase `sqlite_cache_size`
+- Increase the batch size (if memory allows)
+- Use local SSD storage for input and output files
 
 ### Conversion Failures
-- Enable `enable_partial_conversion`
-- Increase `max_consecutive_errors`
+- Run the CLI with `-v` and check the log for table-level errors
 - Check disk space availability
 - Verify file permissions
 
 ## Future Enhancements
 
-Planned improvements include:
+Possible improvements (configuration flags exist for some of these, but they are not implemented in the converters):
 
-1. **Resume Capability**: Ability to resume interrupted conversions
-2. **Parallel Processing**: Multi-threaded conversion for large tables
-3. **Compression**: Optional compression of stored binary data
-4. **Incremental Conversion**: Convert only changed data
-5. **Cloud Support**: Optimizations for cloud storage backends
+1. **Converter integration**: Let the converters accept a `ResilienceConfig`
+2. **Resume Capability**: Ability to resume interrupted conversions
+3. **Parallel Processing**: Multi-threaded conversion for large tables
+4. **Compression**: Optional compression of stored binary data
+5. **Incremental Conversion**: Convert only changed data
 
 ## Conclusion
 
-The resilience features provide robust handling of large TopSpeed databases with:
+The resilience helpers provide building blocks for large conversions:
 
-- **Automatic optimization** based on database characteristics
-- **Memory-efficient processing** to handle databases larger than available RAM
-- **Progress tracking** for long-running conversions
-- **Error recovery** to maximize data preservation
-- **Configurable settings** for different use cases
+- **Size categories and presets** for choosing settings
+- **Memory checks and cleanup**
+- **Adaptive batch-size and streaming suggestions**
+- **Progress logging**
 
-These enhancements ensure that the converter can handle databases of any size while maintaining data integrity and providing good performance characteristics.
+They are covered by unit and integration tests (see [TESTING_RESILIENCE_FEATURES.md](TESTING_RESILIENCE_FEATURES.md)) but are not yet wired into the converters.

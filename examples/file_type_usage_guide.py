@@ -96,12 +96,15 @@ def demonstrate_reverse_conversion():
     print("""
 from converter.reverse_converter import ReverseConverter
 
+# input.sqlite must have been created by this version's converter
+# (it stores the _topspeed_* metadata needed to rebuild the files).
+# Output files keep their original names, e.g. TxWells.PHD / TxWells.mod.
 converter = ReverseConverter()
 result = converter.convert_sqlite_to_topspeed(
     'input.sqlite', 
     'output_directory/'
 )
-print(f"Generated files: {result['generated_files']}")
+print(f"Files created: {result['files_created']}")
 """)
 
 

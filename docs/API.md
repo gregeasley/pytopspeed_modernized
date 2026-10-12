@@ -9,7 +9,10 @@ This document provides comprehensive API documentation for the Pytopspeed Modern
 - [SQLite Converter](#sqlite-converter)
 - [Multidimensional Handler](#multidimensional-handler)
 - [PHZ Converter](#phz-converter)
-- [Reverse Converter](#reverse-converter)
+- [Reverse Converter](#reverseconverter)
+- [Record Codec](#record-codec)
+- [TopSpeed Metadata Tables](#topspeed-metadata-tables)
+- [TPS Writer](#tps-writer)
 - [Schema Mapper](#schema-mapper)
 - [TopSpeed Parser](#topspeed-parser)
 - [Utility Functions](#utility-functions)
@@ -95,6 +98,14 @@ Estimate table size and characteristics for optimization.
 **Returns:**
 - `Dict[str, Any]`: Dictionary with size estimates and recommendations
 
+##### `should_use_streaming(table_def, estimated_size: Dict[str, Any]) -> bool`
+
+Decide whether a table should be processed in streaming mode, given the result of `estimate_table_size()`.
+
+##### `log_progress(current: int, total: int, table_name: str, operation: str = 'processing')`
+
+Log progress for a table operation.
+
 ### ResilienceConfig
 
 Configuration management for resilience features with predefined settings for different database sizes.
@@ -106,14 +117,20 @@ from converter.resilience_config import ResilienceConfig, get_resilience_config
 #### Predefined Configurations
 
 ```python
-# Get predefined configuration
-config = get_resilience_config('small')    # < 10MB databases
-config = get_resilience_config('medium')   # 10MB - 1GB databases  
-config = get_resilience_config('large')    # 1GB - 10GB databases
-config = get_resilience_config('enterprise') # > 10GB databases
+# get_resilience_config(config_name: str = 'default') -> ResilienceConfig
+config = get_resilience_config('small')       # ResilienceConfig.for_small_databases()
+config = get_resilience_config('medium')      # ResilienceConfig.for_medium_databases()
+config = get_resilience_config('large')       # ResilienceConfig.for_large_databases()
+config = get_resilience_config('enterprise')  # ResilienceConfig.for_enterprise_databases()
+config = get_resilience_config()              # 'default': ResilienceConfig()
 ```
 
+An unknown name raises `ValueError`.
+
 #### Configuration Attributes
+
+`ResilienceConfig` is a dataclass; the most commonly used attributes are listed below (see
+`src/converter/resilience_config.py` for the full list).
 
 | Attribute | Type | Description | Default |
 |-----------|------|-------------|---------|
@@ -131,25 +148,25 @@ config = get_resilience_config('enterprise') # > 10GB databases
 
 Convert configuration to dictionary.
 
-##### `from_dict(config_dict: Dict[str, Any]) -> ResilienceConfig`
+##### `from_dict(config_dict: Dict[str, Any]) -> ResilienceConfig` (classmethod)
 
 Create configuration from dictionary.
 
-##### `for_small_databases() -> ResilienceConfig`
+##### `for_small_databases() -> ResilienceConfig` (classmethod)
 
-Get configuration optimized for small databases (< 10MB).
+`max_memory_mb=200`, `default_batch_size=200`.
 
-##### `for_medium_databases() -> ResilienceConfig`
+##### `for_medium_databases() -> ResilienceConfig` (classmethod)
 
-Get configuration optimized for medium databases (10MB - 1GB).
+`max_memory_mb=500`, `default_batch_size=100`.
 
-##### `for_large_databases() -> ResilienceConfig`
+##### `for_large_databases() -> ResilienceConfig` (classmethod)
 
-Get configuration optimized for large databases (1GB - 10GB).
+`max_memory_mb=1000`, `default_batch_size=50`, parallel processing and checkpointing enabled.
 
-##### `for_enterprise_databases() -> ResilienceConfig`
+##### `for_enterprise_databases() -> ResilienceConfig` (classmethod)
 
-Get configuration optimized for enterprise databases (> 10GB).
+`max_memory_mb=2000`, `default_batch_size=25`, parallel processing and checkpointing enabled.
 
 ### Database Size Category Estimation
 
@@ -164,7 +181,9 @@ category = estimate_database_size_category(estimated_size_mb, estimated_records)
 - `estimated_records` (int): Estimated total number of records
 
 **Returns:**
-- `str`: Configuration category ('small', 'medium', 'large', 'enterprise')
+- `str`: Configuration category: `'enterprise'` if > 10,000 MB or > 1,000,000 records,
+  `'large'` if > 1,000 MB or > 100,000 records, `'medium'` if > 100 MB or > 10,000 records,
+  otherwise `'small'`
 
 ## 🔧 Core Classes
 
@@ -190,12 +209,12 @@ from converter.sqlite_converter import SqliteConverter
 #### Constructor
 
 ```python
-SqliteConverter(batch_size: int = 1000, progress_callback: Optional[Callable] = None)
+SqliteConverter(batch_size: int = 1000, progress_callback=None)
 ```
 
 **Parameters:**
 - `batch_size` (int): Number of records to process in each batch (default: 1000)
-- `progress_callback` (Callable): Optional callback function for progress updates
+- `progress_callback` (Callable): Optional `callback(current, total, message)` for progress updates
 
 **Example:**
 ```python
@@ -212,15 +231,20 @@ converter = SqliteConverter(batch_size=500, progress_callback=progress_callback)
 Convert a single TopSpeed file to SQLite.
 
 ```python
-convert(input_file: str, output_file: str) -> Dict[str, Any]
+convert(phd_file: str, output_file: str) -> Dict[str, Any]
 ```
 
 **Parameters:**
-- `input_file` (str): Path to input TopSpeed file (.phd, .mod, .tps)
+- `phd_file` (str): Path to input TopSpeed file (.phd, .mod, .tps)
 - `output_file` (str): Path to output SQLite database
 
 **Returns:**
-- `Dict[str, Any]`: Conversion results with success status, statistics, and errors
+- `Dict[str, Any]`: `success`, `tables_created`, `total_records`, `errors`, `duration`
+
+Tables whose definition parses are converted with `RecordCodec` (see [Record Codec](#record-codec));
+definitions that fail to parse fall back to the `MultidimensionalHandler` path. The database also
+gets the hidden `_topspeed_*` tables that reverse conversion needs (see
+[TopSpeed Metadata Tables](#topspeed-metadata-tables)).
 
 **Example:**
 ```python
@@ -244,7 +268,11 @@ convert_multiple(input_files: List[str], output_file: str) -> Dict[str, Any]
 - `output_file` (str): Path to output SQLite database
 
 **Returns:**
-- `Dict[str, Any]`: Conversion results with success status, statistics, and errors
+- `Dict[str, Any]`: `success`, `tables_created`, `total_records`, `duration`, `errors`,
+  `files_processed`, `file_results` (per-file results keyed by input path)
+
+Table names are prefixed by file type to avoid collisions: `phd_`, `mod_`, `tps_` (other extensions
+get `file_N_`; a second file of the same type gets its position appended, e.g. `phd2_`).
 
 **Example:**
 ```python
@@ -254,9 +282,9 @@ results = converter.convert_multiple(files, 'combined.sqlite')
 
 ### MultidimensionalHandler
 
-Advanced class for handling TopSpeed multidimensional arrays and converting them to JSON format in SQLite.
-
-**Use for**: Automatic detection and conversion of array fields in TopSpeed tables
+Array detection and JSON conversion for TopSpeed array fields. `SqliteConverter` now converts tables
+with `RecordCodec` and uses this handler only as a fallback for table definitions that fail to parse;
+`RecordCodec` reuses its numbered-field grouping rule (`NAME1..NAMEn` -> one array `NAME`).
 
 ```python
 from converter.multidimensional_handler import MultidimensionalHandler
@@ -293,15 +321,25 @@ analysis = handler.analyze_table_structure(table_def)
 Creates SQLite schema for tables with multidimensional fields.
 
 ```python
-sql = handler.create_sqlite_schema("TABLE_NAME", analysis)
+sql = handler.create_sqlite_schema("TABLE_NAME", analysis, table_def=None)
 ```
 
 **Parameters:**
 - `table_name` (str): Name of the SQLite table
 - `analysis` (Dict): Analysis results from `analyze_table_structure()`
+- `table_def` (optional): TopSpeed table definition
 
 **Returns:**
 - `str`: CREATE TABLE SQL statement
+
+##### parse_record_data() / prepare_record_for_sqlite()
+
+```python
+parse_record_data(data, analysis: Dict[str, Any]) -> Dict[str, Any]
+prepare_record_for_sqlite(parsed_data: Dict[str, Any]) -> Tuple[List[str], List[Any]]
+```
+
+Parse one record's bytes into a field dict, then turn it into (column names, values) for an INSERT.
 
 #### ArrayFieldInfo
 
@@ -316,7 +354,10 @@ class ArrayFieldInfo:
     array_size: int             # Number of elements in array
     start_offset: int           # Starting offset in record
     element_offsets: List[int]  # Offset of each element
-    is_single_field_array: bool # Whether this is a single large field
+    is_single_field_array: bool = False  # Whether this is a single large field
+    double_79_extra1: int = None
+    double_79_extra2: int = None
+    element_names: List[str] = None
 ```
 
 #### Array Detection Types
@@ -331,14 +372,10 @@ class ArrayFieldInfo:
 
 #### Data Type Handling
 
-- **DOUBLE Arrays**: Preserved as JSON arrays of numbers
-- **BYTE Arrays**: Converted to JSON arrays of booleans (`true`/`false`)
-- **STRING Arrays**: Maintained as JSON arrays of strings
-- **SHORT Arrays**: Preserved as JSON arrays of integers
-- **LONG Arrays**: Preserved as JSON arrays of integers
-- **DECIMAL Arrays**: Preserved as JSON arrays of floating-point numbers
-- **DATE Arrays**: Preserved as JSON arrays of date strings (YYYY-MM-DD format)
-- **Null vs Zero**: Distinguishes between `null` (missing data) and `0.0` (actual zero)
+Array values are JSON arrays of the element values (numbers, strings, `YYYY-MM-DD` dates).
+For tables converted with `RecordCodec` (the normal path), BYTE values, including BYTE arrays,
+are integers. The handler's own parser (fallback path only) still returns BYTE elements as
+booleans.
 
 #### Enhanced Parsing Features
 
@@ -421,7 +458,7 @@ from converter.phz_converter import PhzConverter
 #### Constructor
 
 ```python
-PhzConverter(batch_size: int = 1000, progress_callback: Optional[Callable] = None)
+PhzConverter(batch_size: int = 1000, progress_callback=None)
 ```
 
 **Parameters:**
@@ -443,7 +480,13 @@ convert_phz(phz_file: str, output_file: str) -> Dict[str, Any]
 - `output_file` (str): Path to output SQLite database
 
 **Returns:**
-- `Dict[str, Any]`: Conversion results with success status, statistics, and errors
+- `Dict[str, Any]`: `success`, `tables_created`, `total_records`, `duration`, `errors`,
+  `extracted_files` (names of the .phd/.mod files converted), `phz_contents`, plus the
+  `convert_multiple()` keys (`files_processed`, `file_results`)
+
+The .phd and .mod files in the archive are converted with `SqliteConverter.convert_multiple()`
+into one database (tables prefixed `phd_` / `mod_`). On Windows the temporary extraction folder
+can't always be deleted because the input files are still open; a warning is logged.
 
 **Example:**
 ```python
@@ -463,7 +506,7 @@ list_phz_contents(phz_file: str) -> Dict[str, Any]
 - `phz_file` (str): Path to input .phz file
 
 **Returns:**
-- `Dict[str, Any]`: File contents information with categorized file lists
+- `Dict[str, Any]`: `success`, `phz_contents`, `phd_files`, `mod_files`, `other_files`, `errors`
 
 **Example:**
 ```python
@@ -483,11 +526,11 @@ from converter.reverse_converter import ReverseConverter
 #### Constructor
 
 ```python
-ReverseConverter(progress_callback: Optional[Callable] = None)
+ReverseConverter(progress_callback=None)
 ```
 
 **Parameters:**
-- `progress_callback` (Callable): Optional callback function for progress updates
+- `progress_callback` (Callable): Optional `callback(current, total, message)`, called once per table
 
 #### Methods
 
@@ -505,13 +548,26 @@ convert_sqlite_to_topspeed(sqlite_file: str, output_dir: str) -> Dict[str, Any]
 - `output_dir` (str): Directory for output TopSpeed files; each file keeps its original name
 
 **Returns:**
-- `Dict[str, Any]`: `success`, `files_created`, `tables_processed`, `records_processed`,
-  `duration`, `errors`, and `warnings`
+- `Dict[str, Any]`: `success` (at least one file written and no errors), `files_created`
+  (list of output paths), `tables_processed`, `records_processed`, `duration`, `errors`, `warnings`
 
-Unchanged rows are written back byte for byte, edited rows are re-encoded column by column,
-and index entries and record counts are regenerated. No file is written for a source file
-whose data can't be stored (for example, a duplicate value in a unique key); the reason is
-in `errors`.
+The database must have been created by this version (it needs the `_topspeed_*` tables);
+otherwise the result contains a "no TopSpeed metadata" error. One file is written per
+converted source file, under its original name (a .phz-derived database yields the .phd and
+.mod files; they are not re-zipped).
+
+- Rows are matched to their original records by SQLite rowid. Unchanged rows are written back
+  byte for byte; edited rows keep their record number and only the changed columns are re-encoded;
+  inserted rows get new record numbers; deleted rows and their memos are dropped.
+- If rowids changed (e.g. `VACUUM` after deletes, or a recreated table), unchanged rows are still
+  matched by content; edited rows then become new records.
+- Index entries and record-count metadata are regenerated from the resulting rows.
+- No file is written for a source file whose data can't be stored: a duplicate value in a unique
+  key (error names the table and key) or a value that doesn't fit its field, such as too many
+  array elements or a DECIMAL overflow (error names the column).
+- Tables converted on the fallback path (no codec) are written back unchanged; edits to them are
+  ignored with a warning. Index keys are verified for BYTE, SHORT, LONG, DOUBLE and STRING fields;
+  other key types produce a warning when their table was edited.
 
 **Example:**
 ```python
@@ -519,12 +575,126 @@ converter = ReverseConverter()
 results = converter.convert_sqlite_to_topspeed('input.sqlite', 'output_dir/')
 ```
 
-### Low-level writer
+## Record Codec
 
-`pytopspeed.tpswriter.build_tps(records, last_issued_row, change_count)` builds a complete
-TopSpeed file from raw `(header_size, record_bytes)` pairs: it sorts the records by key,
-packs them into prefix- and RLE-compressed pages, builds the page tree and writes the header.
-`read_raw_records(tps)` returns the raw records of an open file in the same form.
+### RecordCodec
+
+Maps one TopSpeed table definition to SQLite columns and converts DATA record payloads to
+column values and back. Forward conversion, schema creation and reverse conversion all use it.
+
+```python
+from converter.record_codec import RecordCodec
+
+RecordCodec(table_def, encoding: str = 'cp1251', sanitize=None)
+```
+
+**Parameters:**
+- `table_def`: Parsed table definition (`tps.tables.get_definition(number)`)
+- `encoding` (str): String encoding (default: `'cp1251'`)
+- `sanitize` (Callable): Field-name sanitizer (default: the `MultidimensionalHandler` one, which strips the `PRE:` prefix)
+
+**Column layout** (`codec.columns`, a list of `Column` dataclasses with `name`, `sqlite_type`,
+`field_type`, `element_size`, `offsets`, `is_array`, `decimal_count`, `source_fields`,
+`memo_index` and the `is_memo` property), in definition order:
+- scalar field -> one column named after the field without its `PRE:` prefix
+- `DIM(n)` field -> one JSON array column (declared `TEXT`)
+- members of a dimensioned GROUP -> one JSON array column per member; the GROUP itself has no column
+- numbered scalars `NAME1..NAMEn` (suffixes exactly 1..n, same type, evenly spaced) -> one JSON
+  array column `NAME`; fields such as `VALUE` and `VALUE2` stay separate
+- each memo -> one column (declared `BLOB`, holds the memo text)
+
+`data_columns` and `memo_columns` are the non-memo and memo subsets.
+
+#### Methods
+
+```python
+decode(payload: bytes, memos: Optional[Dict[int, bytes]] = None) -> tuple
+encode(values: Sequence[Any], template: Optional[bytes] = None,
+       columns: Optional[Sequence[str]] = None) -> bytes
+encode_memo(value: Any) -> Optional[bytes]
+decode_memo(raw: Optional[bytes]) -> Optional[str]
+index_columns(index_def) -> Optional[List[str]]
+```
+
+- `decode()`: payload bytes (plus raw memo bytes keyed by memo index) -> values in column order.
+  Arrays are returned as JSON strings; NaN/inf become `None` (`null` inside arrays).
+- `encode()`: values in column order -> payload bytes. Bytes not covered by an encoded column are
+  kept from `template` (zeros if omitted); `columns` limits encoding to the named columns. Memo
+  columns are ignored. Raises `ValueError` naming the column when a value doesn't fit (e.g. more
+  array elements than the field has).
+- `encode_memo()`: memo value -> raw memo bytes; `None` means no memo, an empty string is stored
+  as a single zero byte.
+- `index_columns()`: column names for a TopSpeed index, or `None` if a key field isn't a
+  standalone (non-array) column.
+
+**Example:**
+```python
+from pytopspeed.tps import TPS
+from converter.record_codec import RecordCodec
+
+tps = TPS('input.phd', encoding='cp1251')
+tps.set_current_table('WELLS')
+table_def = tps.tables.get_definition(tps.current_table_number)
+codec = RecordCodec(table_def)
+print([(c.name, c.sqlite_type, c.is_array) for c in codec.columns])
+
+values = codec.decode(payload)                        # payload: DATA record bytes
+assert codec.encode(values, template=payload) == payload
+```
+
+## TopSpeed Metadata Tables
+
+Forward conversion stores what SQLite has no place for in tables prefixed `_topspeed_`
+(`converter.topspeed_metadata`; `is_metadata_table(name)` tests for the prefix). Reverse
+conversion needs them, so don't drop them if you want to write the data back. They make the
+database noticeably larger than the table data alone.
+
+| Table | Contents |
+|-------|----------|
+| `_topspeed_file` | One row per converted file: `file_prefix`, `source_file`, `last_issued_row`, `change_count`, `encoding`, `format_version` |
+| `_topspeed_table` | `file_prefix`, `table_number`, `table_name`, `sqlite_table`, `uses_codec` |
+| `_topspeed_record` | Records copied back verbatim (`file_prefix`, `header_size`, `record`): table names, definitions, file-level records, and all records of fallback-path tables |
+| `_topspeed_row` | Original `record_number` and `payload` for each SQLite row (`file_prefix`, `table_number`, `row_id`) |
+| `_topspeed_memo` | Original memo bytes (`file_prefix`, `table_number`, `record_number`, `memo_index`, `data`) |
+
+## TPS Writer
+
+`pytopspeed.tpswriter` builds TopSpeed files from raw records. A record is a
+`(header_size, record_bytes)` pair; `record_bytes[:header_size]` is its key.
+
+```python
+from pytopspeed.tpswriter import (build_tps, read_raw_records, data_record, memo_records,
+                                  metadata_record, index_records)
+
+build_tps(records, last_issued_row: int = 0, change_count: int = 1) -> bytes
+read_raw_records(tps) -> List[Tuple[int, bytes]]
+data_record(table_number: int, record_number: int, payload: bytes) -> Tuple[int, bytes]
+memo_records(table_number: int, record_number: int, memo_index: int,
+             chunks: Sequence[bytes]) -> List[Tuple[int, bytes]]
+metadata_record(table_number: int, metadata_type: int, count: int,
+                last_access: int = 0) -> Tuple[int, bytes]
+index_records(table_number: int, definition, payload: bytes, record_number: int,
+              encoding: str = 'cp1251') -> List[Tuple[int, bytes]]
+```
+
+- `build_tps()` returns the complete file contents: it sorts the records by key (input order
+  doesn't matter), packs them into prefix- and RLE-compressed pages, builds the page tree and
+  writes the header.
+- `read_raw_records()` returns every record of an open `TPS` file in the same form.
+- `data_record()`, `memo_records()` (one record per chunk; `converter.record_codec.memo_chunks()`
+  splits memo bytes into 256-byte chunks), `metadata_record()` (`metadata_type` 0xF3 for the row
+  count, or an index number for that index's entry count) and `index_records()` (one entry per
+  index of the definition) build individual records.
+
+**Example (copy a file record for record):**
+```python
+from pytopspeed.tps import TPS
+from pytopspeed.tpswriter import build_tps, read_raw_records
+
+tps = TPS('input.phd', encoding='cp1251')
+with open('copy.phd', 'wb') as f:
+    f.write(build_tps(read_raw_records(tps)))
+```
 
 ## 🗺️ Schema Mapper
 
@@ -627,22 +797,27 @@ from pytopspeed.tps import TPS
 #### Constructor
 
 ```python
-TPS(filename: str)
+TPS(filename, encoding=None, password=None, cached=True, check=False, current_tablename=None,
+    date_fieldname=None, time_fieldname=None, decryptor_class=TpsDecryptor)
 ```
 
 **Parameters:**
 - `filename` (str): Path to TopSpeed file
+- `encoding` (str): Encoding for STRING fields; `None` means `'cp1251'`, the encoding Clarion
+  TopSpeed files use
+- `password` (str): Password for encrypted files
+- `cached`, `check`: Page caching and structure checks
 
 **Example:**
 ```python
-tps = TPS('input.phd')
+tps = TPS('input.phd', encoding='cp1251')
 ```
 
 #### Properties
 
 - `header`: File header information
 - `pages`: List of pages in the file
-- `tables`: Table definitions and metadata
+- `tables`: Table list; `tables.get_number(name)` and `tables.get_definition(number)`
 - `current_table_number`: Currently selected table number
 
 #### Methods
@@ -652,11 +827,11 @@ tps = TPS('input.phd')
 Set the current table for iteration.
 
 ```python
-set_current_table(table_name: str) -> None
+set_current_table(tablename) -> None
 ```
 
 **Parameters:**
-- `table_name` (str): Name of the table to select
+- `tablename` (str): Name of the table to select
 
 ##### __iter__()
 
@@ -669,44 +844,47 @@ for record in tps:
 ```
 
 **Returns:**
-- Iterator of record objects
+- Iterator of dicts, one per DATA record (see [Record Objects](#record-objects))
 
 **Example:**
 ```python
 tps.set_current_table('OWNER')
 for record in tps:
-    print(record.data)
+    print(record)
 ```
 
 ## 📊 Data Types
 
 ### Type Mappings
 
-The library automatically maps TopSpeed data types to SQLite types:
+Column types used by `RecordCodec` (the normal conversion path):
 
 | TopSpeed Type | SQLite Type | Python Type | Notes |
 |---------------|-------------|-------------|-------|
-| BYTE | INTEGER | int | 8-bit unsigned integer |
-| SHORT | INTEGER | int | 16-bit signed integer |
-| LONG | INTEGER | int | 32-bit signed integer |
-| DATE | TEXT | str | Format: YYYY-MM-DD |
-| TIME | TEXT | str | Format: HH:MM:SS |
-| STRING | TEXT | str | Variable length text |
-| DECIMAL | REAL | float | Floating point number |
-| MEMO | BLOB | bytes | Binary large object |
-| BLOB | BLOB | bytes | Binary large object |
+| BYTE, SHORT, USHORT, LONG, ULONG | INTEGER | int | BYTE values are integers, not booleans |
+| FLOAT, DOUBLE, DECIMAL | REAL | float | NaN/inf stored as NULL |
+| STRING, CSTRING, PSTRING | TEXT | str | Right-trimmed; blank -> `''` |
+| DATE | TEXT | str | `YYYY-MM-DD`; NULL if zero |
+| TIME | TEXT | str | `HH:MM:SS.cc` |
+| Array (DIM, GROUP member, NAME1..n) | TEXT | str | JSON array; NaN/inf -> `null` |
+| MEMO | BLOB (declared) | str | Full memo text |
 
 ### Record Objects
 
-Records are returned as dictionary-like objects with the following structure:
+Iterating a `TPS` object yields plain dicts keyed by the full TopSpeed field name (including the
+`PRE:` prefix), plus the record number under the literal key `"b':RecNo'"`:
 
 ```python
 record = {
-    'field_name': value,  # Field values
-    'record_number': int,  # Record number
-    # Additional metadata
+    "b':RecNo'": 1,          # Record number
+    'WEL:ID': 1,             # Field values
+    'WEL:NAME': 'Alpha 1',
+    'WEL:NOTES': ...,        # Memo fields
 }
 ```
+
+This low-level reader returns only the first element of a DIM field; use `RecordCodec` for full
+array and GROUP handling.
 
 ## 🔧 Utility Functions
 
@@ -731,20 +909,24 @@ def progress_callback(current: int, total: int, message: str = "") -> None:
 
 ### Error Handling
 
-All converter methods return a standardized result dictionary:
+Converter methods catch their own exceptions and report them in the result dictionary
+instead of raising. Every result has `success`, `duration` and `errors`; the other keys
+depend on the method:
 
 ```python
 {
     'success': bool,           # Whether the operation succeeded
-    'tables_created': int,     # Number of tables created
-    'total_records': int,      # Total records processed
     'duration': float,         # Operation duration in seconds
     'errors': List[str],       # List of error messages
-    'files_processed': int,    # Number of files processed (multi-file operations)
-    'extracted_files': List[str],  # List of extracted files (PHZ operations)
-    'files_created': List[str],    # List of created files (reverse operations)
-    'tables_processed': int,   # Number of tables processed (reverse operations)
-    'records_processed': int,  # Number of records processed (reverse operations)
+    'tables_created': int,     # convert / convert_multiple / convert_phz
+    'total_records': int,      # convert / convert_multiple / convert_phz
+    'files_processed': int,    # convert_multiple / convert_phz
+    'file_results': Dict,      # convert_multiple / convert_phz
+    'extracted_files': List[str],  # convert_phz
+    'files_created': List[str],    # convert_sqlite_to_topspeed (output paths)
+    'tables_processed': int,       # convert_sqlite_to_topspeed
+    'records_processed': int,      # convert_sqlite_to_topspeed
+    'warnings': List[str],         # convert_sqlite_to_topspeed
 }
 ```
 
@@ -826,6 +1008,10 @@ results = converter.convert_sqlite_to_topspeed('input.sqlite', 'output_dir/')
 if results['success']:
     print(f"Created {len(results['files_created'])} TopSpeed files")
     print(f"Processed {results['records_processed']} records")
+for warning in results['warnings']:
+    print(f"Warning: {warning}")
+for error in results['errors']:
+    print(f"Error: {error}")
 ```
 
 ### Custom Schema Mapping
@@ -840,7 +1026,7 @@ mapper = TopSpeedToSQLiteMapper()
 clean_field = mapper.sanitize_field_name("TIT:PROJ_DESCR")  # "PROJ_DESCR"
 clean_table = mapper.sanitize_table_name("ORDER")           # "ORDER_TABLE"
 
-# Generate SQL
+# Generate SQL (table_def from tps.tables.get_definition(...))
 sql = mapper.generate_create_table_sql(clean_table, table_def)
 print(sql)
 ```
@@ -855,21 +1041,9 @@ if not results['success']:
     print("Conversion failed!")
     for error in results['errors']:
         print(f"  Error: {error}")
-    return
 ```
 
-### Handle Specific Errors
-
-```python
-try:
-    results = converter.convert('input.phd', 'output.sqlite')
-except FileNotFoundError:
-    print("Input file not found")
-except PermissionError:
-    print("Permission denied - check file permissions")
-except Exception as e:
-    print(f"Unexpected error: {e}")
-```
+Missing input files and other failures are reported in `errors` rather than raised.
 
 ### Use Progress Callbacks
 

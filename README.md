@@ -4,21 +4,20 @@ A modernized Python library for converting Clarion TopSpeed database files (.phd
 
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Tests](https://img.shields.io/badge/tests-354%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-376%20passing-brightgreen.svg)](tests/)
 
 ## 🚀 Features
 
 - **Multi-format Support**: Convert .phd, .mod, .tps, and .phz files
-- **Multidimensional Arrays**: Advanced handling of TopSpeed array fields with JSON storage
-- **Enterprise Resilience**: Memory management, adaptive batch sizing, and error recovery for large databases
+- **Array Fields**: `DIM(n)` fields, members of dimensioned `GROUP`s and numbered fields (`PROD1`..`PROD5`) are stored as JSON arrays
 - **Combined Conversion**: Merge multiple TopSpeed files into a single SQLite database
-- **Reverse Conversion**: Convert SQLite databases back to TopSpeed files
+- **Reverse Conversion**: Write a converted (and optionally edited) SQLite database back to TopSpeed files that PHDWin can open
 - **PHZ Support**: Handle zip archives containing TopSpeed files
-- **Progress Tracking**: Real-time progress reporting and detailed logging
-- **Data Integrity**: Preserve all data types, relationships, and null vs zero distinctions
-- **CLI Interface**: Easy-to-use command-line tools
+- **Progress Tracking**: Progress callbacks and logging
+- **Data Integrity**: Unchanged records round-trip byte for byte; `NULL` is kept distinct from zero
+- **CLI Interface**: `pytopspeed convert | reverse | list`
 - **Python API**: Programmatic access to all functionality
-- **Comprehensive Testing**: 354 unit tests, integration tests, and performance tests with 100% pass rate
+- **Tested**: 376 unit and integration tests, built on synthetic TopSpeed files
 
 ## 📋 Supported File Formats
 
@@ -75,44 +74,45 @@ result = converter.convert_sqlite_to_topspeed('input.sqlite', 'output_directory/
 ```
 
 How it works:
-- The forward conversion keeps what SQLite can't hold (table definitions, table numbers, file-level records and the original bytes of every row) in hidden `_topspeed_*` tables. Reverse conversion needs them, so it only works on databases created by this version.
+- The forward conversion keeps what SQLite can't hold (table definitions, table numbers, file-level records and the original bytes of every row) in hidden `_topspeed_*` tables. Reverse conversion needs them, so it only works on databases created by this version; other databases fail with a "no TopSpeed metadata" error.
 - Rows you didn't change are written back byte for byte. Edited rows keep their record number and only the changed columns are re-encoded. Inserted rows get new record numbers; deleted rows and their memos are dropped.
-- Index entries and record counts are rebuilt from the final rows. A change that would put two rows on the same unique key is rejected with an error naming the table and key.
-- Output files keep their original names (e.g. `TxWells.PHD`, `TxWells.mod`). A database made from a `.phz` produces both files; zip them yourself if you need a `.phz` again.
+- Index entries and record counts are rebuilt from the final rows. A change that would put two rows on the same unique key is rejected with an error naming the table and key, and no file is written. A value that doesn't fit its field (too many array elements, a `DECIMAL` overflow) is rejected with an error naming the column.
+- Output files keep their original names (e.g. `MyProject.PHD`, `MyProject.mod`). A database made from a `.phz` produces both files; zip them yourself if you need a `.phz` again.
 - Rows are linked to their source records by SQLite `rowid`. If rowids change (`VACUUM` after deletes, or dropping and recreating a table), unchanged rows are still matched by content, but edited rows are written as new records with new record numbers.
 
-## 🔄 Multidimensional Array Handling
+Limits:
+- Tables whose definition could not be parsed during forward conversion are written back unchanged; edits to them are ignored with a warning.
+- Index keys are encoded for `BYTE`, `SHORT`, `LONG`, `DOUBLE` and `STRING` fields (including `NOCASE` and descending keys). If you edit a table with an index on another field type, you get a warning.
+- Round-tripped and edited files have been opened in PHDWin 2.11 and read with the SoftVelocity TopSpeed ODBC driver. Keep a copy of the original file anyway.
 
-Pytopspeed Modernized includes advanced support for TopSpeed multidimensional arrays, automatically detecting and converting array fields to JSON format in SQLite.
+The result is a dict with `success`, `files_created`, `tables_processed`, `records_processed`, `duration`, `errors` and `warnings`.
 
-### Array Detection
+## 🔄 Array Handling
 
-The system automatically detects two types of arrays:
+Array-like TopSpeed fields are stored as JSON arrays in SQLite `TEXT` columns:
 
-1. **Single-Field Arrays**: Large fields containing multiple elements (e.g., 96-byte `DAT:PROD1` with 12 elements)
-2. **Multi-Field Arrays**: Multiple small fields forming an array (e.g., `CUM:PROD1`, `CUM:PROD2`, etc.)
+1. **`DIM(n)` fields**: one JSON array column per field (e.g. `MONHIST` `PROD1`, 12 monthly `DOUBLE` values)
+2. **Dimensioned `GROUP`s**: each member becomes its own JSON array with one element per group entry; the `GROUP` itself gets no column (e.g. `FORCAST` `NUMFORM` → `VALUETYPE`, `PCODE`, `PRODVALTYPE`, `ACTION`, `VALUEREAL`, `DATEVAL`)
+3. **Numbered fields**: scalars named `NAME1`..`NAMEn` of the same type become one array column `NAME` (e.g. `CUMVOL` `PROD1`..`PROD5` → `PROD`). Fields such as `VALUE` and `VALUE2` stay separate.
 
 ### Example: MONHIST Table
 
-```python
+```
 # TopSpeed structure
-DAT:PROD1    # 96-byte field with 12 DOUBLE elements
-DAT:PROD2    # 96-byte field with 12 DOUBLE elements
-DAT:PROD3    # 96-byte field with 12 DOUBLE elements
+PROD1        # DOUBLE, DIM(12)
+PROD2        # DOUBLE, DIM(12)
 
 # SQLite result
-PROD1        # JSON: [1.5, 2.3, 0.0, null, ...]
-PROD2        # JSON: [0.8, 1.2, 0.0, null, ...]
-PROD3        # JSON: [2.1, 1.8, 0.0, null, ...]
+PROD1        # JSON: [0.0, 17226.0, 20428.0, ...]
+PROD2        # JSON: [0.0, 0.0, 0.0, ...]
 ```
 
 ### Data Type Preservation
 
-- **Zero vs NULL**: Distinguishes between actual zero values (`0.0`) and missing data (`null`)
-- **Byte Arrays**: `BYTE` arrays hold their numeric values (`[0, 1, 13]`); flags read as `0`/`1`
-- **GROUP Arrays**: Members of a dimensioned `GROUP` (e.g. `FORCAST` `NUMFORM` → `VALUETYPE`, `PCODE`, `ACTION`, ...) each become a JSON array with one element per group entry
-- **Numeric Arrays**: Preserves `DOUBLE`, `LONG`, `SHORT` precision
-- **String Arrays**: Maintains text encoding and length
+- **Zero vs NULL**: Zero values stay `0.0`; NaN and infinity become `NULL` (`null` inside arrays)
+- **Byte Arrays**: `BYTE` arrays hold their numeric values (`[0, 1, 13]`); flags read as `0`/`1`, not `true`/`false`
+- **Numeric Arrays**: Preserves `DOUBLE`, `LONG`, `SHORT` values
+- **String Arrays**: Right-trimmed text
 
 ### Querying Array Data
 
@@ -128,63 +128,31 @@ FROM MONHIST;
 SELECT * FROM MONHIST 
 WHERE json_extract(PROD1, '$[0]') > 100.0;
 
--- Count non-null elements
+-- Number of elements in an array
 SELECT LSE_ID,
        json_array_length(PROD1) as PROD1_Count
 FROM MONHIST;
 ```
 
-## 🛡️ Enterprise Resilience Features
+## 🛡️ Resilience Helpers
 
-### Memory Management
-- **Configurable Memory Limits**: 200MB - 2GB based on database size
-- **Automatic Cleanup**: Garbage collection every 1,000 records
-- **Memory Monitoring**: Real-time memory usage tracking with psutil
-- **Streaming Processing**: Handle databases larger than available RAM
+The `converter` package also contains standalone helper modules for large databases. They are not used by `SqliteConverter` or the CLI; call them yourself if you need them. See [docs/RESILIENCE_FEATURES.md](docs/RESILIENCE_FEATURES.md).
 
-### Adaptive Batch Sizing
-- **Dynamic Optimization**: Batch sizes automatically adjust based on table characteristics
-  - Small records (< 100B): 100-400 records per batch
-  - Medium records (100B-1KB): 25-100 records per batch
-  - Large records (1KB-5KB): 10-25 records per batch
-  - Very large records (> 5KB): 5-10 records per batch
-- **Complex Table Handling**: Smaller batches for tables with many fields
-- **Memory-Aware**: Batch sizes adapt to available memory
+- **`ResilienceEnhancer`** (`converter.resilience_enhancements`): memory checks with psutil, forced garbage collection, adaptive batch sizes based on record size and field count, table size estimates
+- **`ResilienceConfig`** (`converter.resilience_config`): predefined settings objects
 
-### Predefined Configurations
 ```python
 from converter.resilience_config import get_resilience_config
 
-# Small databases (< 10MB)
-config = get_resilience_config('small')  # 200MB limit, 200 batch size
-
-# Medium databases (10MB - 1GB)  
-config = get_resilience_config('medium')  # 500MB limit, 100 batch size
-
-# Large databases (1GB - 10GB)
-config = get_resilience_config('large')  # 1GB limit, 50 batch size, parallel processing
-
-# Enterprise databases (> 10GB)
-config = get_resilience_config('enterprise')  # 2GB limit, 25 batch size, full features
+config = get_resilience_config('small')       # 200MB limit, batch size 200
+config = get_resilience_config('medium')      # 500MB limit, batch size 100
+config = get_resilience_config('large')       # 1GB limit, batch size 50
+config = get_resilience_config('enterprise')  # 2GB limit, batch size 25
 ```
 
-### Error Recovery
-- **Partial Conversion**: Save progress even if conversion is interrupted
-- **Graceful Degradation**: Continue processing despite individual record failures
-- **Detailed Logging**: Comprehensive error reporting for troubleshooting
-- **Resume Capability**: Restart from checkpoints for enterprise configurations
+The configurations also carry flags such as `enable_parallel_processing` and `enable_checkpointing`; nothing in the converters acts on them yet.
 
-### Performance Optimization
-- **SQLite Tuning**: WAL mode, optimized cache sizes, memory temp storage
-- **Parallel Processing**: Multi-threaded conversion for large databases
-- **Progress Tracking**: Real-time progress reporting for long operations
-- **Resource Monitoring**: Prevent system overload with configurable limits
-
-### Scalability
-- **Tested Limits**: Successfully handles databases with millions of records
-- **Large Tables**: FORCAST table with 4,370 records (2,528 bytes each)
-- **Memory Efficiency**: 60-80% reduction in memory usage with adaptive batching
-- **Enterprise Ready**: Production-tested with databases > 10GB
+The converter itself opens SQLite in WAL mode with `synchronous=NORMAL`, inserts in batches (`--batch-size`, default 1000), and logs and skips tables that fail to convert instead of stopping.
 
 ## 🛠️ Quick Start
 
@@ -212,21 +180,23 @@ pip install -e .
 
 ### Basic Usage
 
+Installing the package provides the `pytopspeed` command. From a source checkout without installing, use `python src/cli/main.py` in its place.
+
 ```bash
 # Convert a single .phd file to SQLite
-python pytopspeed.py convert assets/TxWells.PHD output.sqlite
+pytopspeed convert MyProject.PHD output.sqlite
 
 # Convert multiple files to a combined database
-python pytopspeed.py convert assets/TxWells.PHD assets/TxWells.mod combined.sqlite
+pytopspeed convert MyProject.PHD MyProject.mod combined.sqlite
 
 # Convert a .phz file (zip archive)
-python pytopspeed.py convert assets/TxWells.phz output.sqlite
+pytopspeed convert MyProject.phz output.sqlite
 
 # List contents of a .phz file
-python pytopspeed.py list assets/TxWells.phz
+pytopspeed list MyProject.phz
 
 # Convert SQLite back to TopSpeed files
-python pytopspeed.py reverse input.sqlite output_directory/
+pytopspeed reverse input.sqlite output_directory/
 ```
 
 ### Python API Examples
@@ -274,7 +244,7 @@ results = reverse_converter.convert_sqlite_to_topspeed(
     'input.sqlite', 
     'output_directory/'
 )
-print(f"Generated files: {results['generated_files']}")
+print(f"Files created: {results['files_created']}")
 ```
 
 ## 🚨 Common Issues and Solutions
@@ -282,9 +252,9 @@ print(f"Generated files: {results['generated_files']}")
 ### Wrong Converter for File Type
 **Problem**: Using `SqliteConverter.convert()` with a `.phz` file
 ```python
-# ❌ WRONG - This will fail
+# ❌ WRONG - This will fail: a .phz is a zip archive, not a TopSpeed file
 converter = SqliteConverter()
-result = converter.convert('input.phz', 'output.sqlite')  # Error: 'TPS' object has no attribute 'tables'
+result = converter.convert('input.phz', 'output.sqlite')
 ```
 
 **Solution**: Use `PhzConverter.convert_phz()` for `.phz` files
@@ -324,141 +294,138 @@ from sqlite_converter import SqliteConverter  # ModuleNotFoundError
 from converter.sqlite_converter import SqliteConverter
 ```
 
+### Reverse Conversion Says "no TopSpeed metadata"
+The database was not created by this version of the converter (or the `_topspeed_*` tables were dropped). Convert the original TopSpeed file again and redo your edits in the new database.
+
+### PHDWin Keeps Reporting "File System Error"
+After PHDWin fails to open one database, it can keep reporting "Version file is UNAVAILABLE ... File System Error" for every database it opens afterwards. Restart PHDWin before trying another file.
+
 ## 📊 Performance
 
-Based on testing with `TxWells.PHD` and `TxWells.mod`:
-
-- **Single file conversion**: ~1,300 records/second
-- **Combined conversion**: ~1,650 records/second  
-- **Reverse conversion**: ~50,000 records/second
-- **Memory efficient**: Configurable batch processing
-- **Progress tracking**: Real-time progress reporting
+The converted database is larger than the source file, because it also stores the original bytes of every record for reverse conversion (a ~7 MB `.PHD` became a ~37 MB SQLite database in testing). Use `--batch-size` to trade memory for fewer, larger inserts.
 
 ## 🔧 Command Line Interface
+
+```bash
+pytopspeed [-v | --verbose] [-q | --quiet] [--version] {convert,reverse,list} ...
+```
+
+**Global options** (put them before the command):
+- `-v, --verbose` - Enable verbose logging
+- `-q, --quiet` - Suppress progress output (log messages are still printed)
+- `--version` - Print the version
 
 ### Convert Command
 
 ```bash
-python pytopspeed.py convert [OPTIONS] INPUT_FILES... OUTPUT_FILE
+pytopspeed convert [--batch-size N] INPUT_FILES... OUTPUT_FILE
 ```
 
-**Options:**
-- `--batch-size BATCH_SIZE` - Number of records to process in each batch (default: 1000)
-- `-v, --verbose` - Enable verbose logging
-- `-q, --quiet` - Suppress progress output
+- `--batch-size N` - Number of records to insert per batch (default: 1000)
+- Several `.phd`/`.mod`/`.tps` inputs are combined into one database with prefixed table names.
+- A `.phz` must be converted on its own: only one per run, and it can't be mixed with other files.
 
 ### Reverse Command
 
 ```bash
-python pytopspeed.py reverse [OPTIONS] INPUT_FILE OUTPUT_DIRECTORY
+pytopspeed reverse INPUT_FILE OUTPUT_DIRECTORY
 ```
 
 ### List Command
 
 ```bash
-python pytopspeed.py list [OPTIONS] PHZ_FILE
+pytopspeed list PHZ_FILE
 ```
 
 ## 📚 Documentation
 
-Comprehensive documentation is available in the `docs/` directory:
+More documentation is in the `docs/` directory:
 
 - **[Installation Guide](docs/INSTALLATION.md)** - Detailed installation instructions
-- **[API Documentation](docs/API.md)** - Complete API reference
+- **[API Documentation](docs/API.md)** - API reference
 - **[Troubleshooting Guide](docs/TROUBLESHOOTING.md)** - Common issues and solutions
 - **[Developer Documentation](docs/DEVELOPER.md)** - Development and contribution guidelines
+- **[Resilience Features](docs/RESILIENCE_FEATURES.md)** - The resilience helper modules
+- **[PHD Format Analysis](docs/phd_format_analysis.md)** - Notes on the TopSpeed file format
 
 ## 🧪 Testing
 
-### Comprehensive Test Suite
-
 ```bash
-# Run all resilience tests
-python tests/run_resilience_tests.py
+# Unit and integration tests (376 tests)
+python -m pytest tests/unit tests/integration
 
-# Run specific test types
-python tests/run_resilience_tests.py unit
-python tests/run_resilience_tests.py integration
-python tests/run_resilience_tests.py performance
+# Unit tests with coverage (what CI runs)
+python -m pytest tests/unit --cov=src
 
-# Run with coverage
-python tests/run_resilience_tests.py -c
+# Performance tests are skipped unless enabled
+python -m pytest tests/performance --run-performance
 
-# Run with pytest directly
-python -m pytest tests/unit/ -v
-python -m pytest tests/integration/ -v
-python -m pytest tests/performance/ --run-performance
+# Resilience-module tests only
+python tests/run_resilience_tests.py [unit|integration|performance|all] [-c]
 ```
 
 ### Test Coverage
 
-**Unit Tests (70+ tests):**
-- ✅ **ResilienceEnhancer** - Memory management, adaptive batch sizing, data extraction
-- ✅ **ResilienceConfig** - Configuration management and validation
-- ✅ **SQLite Converter Enhancements** - Enhanced table definition parsing
-- ✅ **Error Handling** - Robust error recovery and fallback mechanisms
+- **Unit tests (358)**: TopSpeed reader, TopSpeed writer, record codec, SQLite/PHZ/reverse converters, schema mapping, array handling, and the helper modules (batch processing, validation, error handling, resilience)
+- **Integration tests (18)**: `.mod` file conversion and the resilience helpers
+- **Performance tests (14)**: memory and throughput checks for the resilience helpers; run only with `--run-performance`
 
-**Integration Tests (15+ tests):**
-- ✅ **End-to-End Scenarios** - Complete conversion workflows
-- ✅ **Configuration Selection** - Auto-detection based on database size
-- ✅ **Component Integration** - Cross-component interaction validation
-- ✅ **Performance Integration** - Resource usage under realistic conditions
+The tests build their TopSpeed input files synthetically (`tests/unit/tps_builder.py`), so no sample database is needed.
 
-**Performance Tests (12+ tests):**
-- ✅ **Memory Performance** - Memory usage patterns and cleanup efficiency
-- ✅ **Processing Performance** - Speed and throughput under various loads
-- ✅ **Scalability Performance** - Performance with increasing data sizes
-- ✅ **Concurrent Performance** - Multi-threaded operation testing
+### Continuous Integration
 
-**Test Results:**
-- ✅ **354 total tests** - All passing with 100% pass rate
-- ✅ **95%+ code coverage** - Comprehensive test coverage
-- ✅ **Performance benchmarks** - Validated scalability characteristics
-- ✅ **Memory efficiency** - Tested memory usage patterns
+GitHub Actions (`.github/workflows/ci.yml`) runs on pushes to `master`/`develop`, pull requests to `master`, and releases. It tests Python 3.8 to 3.12 on Ubuntu (flake8 syntax checks, mypy as a non-blocking check, unit tests with coverage), builds and checks the package, uploads pull-request builds to TestPyPI, and publishes releases to PyPI.
 
 ## 📖 Examples
 
-Working examples are available in the `examples/` directory:
+Working examples are available in the [`examples/`](examples/) directory:
 
-- **Basic conversion** - Single file conversion
-- **Combined conversion** - Multiple file conversion
-- **PHZ handling** - Zip archive processing
-- **Reverse conversion** - SQLite to TopSpeed
-- **Round-trip conversion** - Complete conversion cycle
-- **Custom progress tracking** - Advanced progress monitoring
-- **Error handling** - Comprehensive error handling patterns
+- **Basic conversion** - `convert_phd_to_sqlite.py`
+- **Combined conversion** - `convert_combined_to_sqlite.py`
+- **PHZ handling** - `convert_phz_to_sqlite.py`
+- **Reverse conversion** - `convert_sqlite_to_topspeed.py`
+- **Round-trip conversion** - `round_trip_conversion.py`
+- **Array fields** - `multidimensional_arrays.py`
+- **CLI usage** - `cli_usage_examples.py`
 
 ## 🏗️ Architecture
 
 ```
-TopSpeed Files → Parser → Schema Mapper → SQLite Converter → SQLite Database
+TopSpeed Files → Parser → Record Codec → SQLite Converter → SQLite Database
      ↓              ↓           ↓              ↓
-   .phd/.mod    Modernized   Type Mapping   Data Migration
-   .tps/.phz    pytopspeed   Field Names    Batch Processing
+   .phd/.mod    Modernized   Column layout  Data migration +
+   .tps/.phz    pytopspeed   Type mapping   _topspeed_* metadata
+
+SQLite Database → Reverse Converter → Record Codec (encode) → TopSpeed Writer → TopSpeed Files
 ```
 
 ### Key Components
 
-- **TopSpeed Parser** - Modernized parser for reading TopSpeed files
-- **Schema Mapper** - Maps TopSpeed schemas to SQLite
+- **TopSpeed Parser** (`pytopspeed`) - Modernized parser for reading TopSpeed files
+- **TopSpeed Writer** (`pytopspeed/tpswriter.py`) - Builds TopSpeed files: pages, B-tree, compression, indexes
+- **Record Codec** (`converter/record_codec.py`) - Maps a table definition to SQLite columns and decodes/encodes records
+- **Schema Mapper** - Table and column name sanitization; type mapping for the fallback path
 - **SQLite Converter** - Handles data migration and conversion
 - **PHZ Converter** - Processes zip archives containing TopSpeed files
 - **Reverse Converter** - Converts SQLite back to TopSpeed files
-- **CLI Interface** - Command-line tools for easy usage
+- **CLI Interface** (`cli/main.py`) - The `pytopspeed` command
 
 ## 🔄 Data Type Conversion
 
 | TopSpeed Type | SQLite Type | Notes |
 |---------------|-------------|-------|
 | BYTE | INTEGER | 8-bit unsigned integer |
-| SHORT | INTEGER | 16-bit signed integer |
-| LONG | INTEGER | 32-bit signed integer |
-| DATE | TEXT | Format: YYYY-MM-DD |
-| TIME | TEXT | Format: HH:MM:SS |
-| STRING | TEXT | Variable length text |
+| SHORT, USHORT | INTEGER | 16-bit integer |
+| LONG, ULONG | INTEGER | 32-bit integer |
+| FLOAT, DOUBLE | REAL | NaN and infinity become `NULL` |
 | DECIMAL | REAL | Floating point number |
-| MEMO | BLOB | Binary large object |
-| BLOB | BLOB | Binary large object |
+| DATE | TEXT | Format: `YYYY-MM-DD`; `NULL` if the date is zero |
+| TIME | TEXT | Format: `HH:MM:SS.cc` |
+| STRING, CSTRING, PSTRING | TEXT | Right-trimmed; blank becomes `''` |
+| MEMO | BLOB column | Holds the memo's full text |
+| Arrays (`DIM`, dimensioned `GROUP` members, numbered fields) | TEXT | JSON array |
+
+Columns follow the order of the table definition. SQLite indexes are created for TopSpeed keys whose fields map to plain (non-array) columns.
 
 ## 🎯 Key Features
 
@@ -470,22 +437,22 @@ When converting multiple files, tables are automatically prefixed to avoid confl
 - **.mod files** → `mod_` prefix (e.g., `mod_DEPRECIATION`, `mod_MODID`)
 - **.tps files** → `tps_` prefix
 - **Other files** → `file_N_` prefix
+- A second file of the same type gets the file's position in the list added (e.g. `phd2_`)
 
-### Column Name Sanitization
+### Name Sanitization
 
-Column names are automatically sanitized for SQLite compatibility:
+Column and table names are sanitized for SQLite compatibility:
 
 - **Prefix removal**: `TIT:PROJ_DESCR` → `PROJ_DESCR`
-- **Special characters**: `.` → `_`
+- **Special characters**: spaces, `-`, `.`, `/`, `\` → `_`
 - **Numeric prefixes**: `123FIELD` → `_123FIELD`
-- **Reserved words**: `ORDER` → `ORDER_TABLE`
+- **Reserved words** (table names): `ORDER` → `ORDER_TABLE`
 
 ### Error Handling
 
-- **Graceful degradation** - Continue processing despite individual table errors
-- **Detailed logging** - Comprehensive error reporting and debugging information
-- **Data preservation** - Ensure data integrity even with parsing issues
-- **Recovery mechanisms** - Automatic handling of common issues
+- **Graceful degradation** - A table that fails to convert is logged and skipped; the rest of the file is still converted
+- **Fallback parsing** - Tables whose definition can't be parsed are converted by an older heuristic path
+- **Detailed logging** - Use `-v` for debug output
 
 ## 🤝 Contributing
 
@@ -507,8 +474,10 @@ conda activate pytopspeed_modernized_dev
 pip install -e .[dev]
 
 # Run tests
-python -m pytest tests/ -v
+python -m pytest tests/unit tests/integration
 ```
+
+Tests must use synthetic data; don't add tests that depend on real client databases.
 
 ## 📄 License
 
@@ -517,16 +486,14 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 🙏 Acknowledgments
 
 - Based on the original [pytopspeed library](https://github.com/dylangiles/pytopspeed/)
-- Modernized for Python 3.11 and construct 2.10+
+- Modernized for Python 3.8+ and construct 2.10+
 - Enhanced with SQLite conversion and reverse conversion capabilities
-- Comprehensive testing and documentation
 
 ## 📞 Support
 
-- **Documentation**: See the `docs/` directory for comprehensive guides
+- **Documentation**: See the `docs/` directory
 - **Examples**: Check the `examples/` directory for working code
 - **Issues**: Open an issue in the project repository
-- **Discussions**: Use the project's discussion forum for questions
 
 ---
 

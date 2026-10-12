@@ -28,21 +28,23 @@ pip install -e .
 
 ### Basic Usage
 
+Installing the package provides the `pytopspeed` command. From a source checkout without installing, use `python src/cli/main.py` in its place.
+
 ```bash
 # Convert a single .phd file to SQLite
-python pytopspeed.py convert assets/TxWells.PHD output.sqlite
+pytopspeed convert MyProject.PHD output.sqlite
 
 # Convert multiple files to a combined database
-python pytopspeed.py convert assets/TxWells.PHD assets/TxWells.mod combined.sqlite
+pytopspeed convert MyProject.PHD MyProject.mod combined.sqlite
 
 # Convert a .phz file (zip archive)
-python pytopspeed.py convert assets/TxWells.phz output.sqlite
+pytopspeed convert MyProject.phz output.sqlite
 
 # List contents of a .phz file
-python pytopspeed.py list assets/TxWells.phz
+pytopspeed list MyProject.phz
 
 # Convert SQLite back to TopSpeed files
-python pytopspeed.py reverse input.sqlite output_directory/
+pytopspeed reverse input.sqlite output_directory/
 ```
 
 ## 📋 Supported File Formats
@@ -54,60 +56,71 @@ python pytopspeed.py reverse input.sqlite output_directory/
 
 ## 🛠️ Command Line Interface
 
+```bash
+pytopspeed [-v | --verbose] [-q | --quiet] [--version] {convert,reverse,list} ...
+```
+
+**Global options** (put them before the command):
+- `-v, --verbose` - Enable verbose logging
+- `-q, --quiet` - Suppress progress output (log messages are still printed)
+- `--version` - Print the version
+
 ### Convert Command
 
 Convert TopSpeed files to SQLite databases:
 
 ```bash
-python pytopspeed.py convert [OPTIONS] INPUT_FILES... OUTPUT_FILE
+pytopspeed convert [--batch-size N] INPUT_FILES... OUTPUT_FILE
 ```
 
 **Options:**
-- `--batch-size BATCH_SIZE` - Number of records to process in each batch (default: 1000)
-- `-v, --verbose` - Enable verbose logging
-- `-q, --quiet` - Suppress progress output
+- `--batch-size N` - Number of records to insert per batch (default: 1000)
+
+Several `.phd`/`.mod`/`.tps` inputs are combined into one database. A `.phz` must be converted on its own: only one per run, and it can't be mixed with other files.
 
 **Examples:**
 ```bash
 # Single file conversion
-python pytopspeed.py convert assets/TxWells.PHD output.sqlite
+pytopspeed convert MyProject.PHD output.sqlite
 
 # Multiple file conversion with custom batch size
-python pytopspeed.py convert assets/TxWells.PHD assets/TxWells.mod combined.sqlite --batch-size 500
+pytopspeed convert --batch-size 500 MyProject.PHD MyProject.mod combined.sqlite
 
 # PHZ file conversion
-python pytopspeed.py convert assets/TxWells.phz output.sqlite
+pytopspeed convert MyProject.phz output.sqlite
 ```
 
 ### Reverse Command
 
-Convert SQLite databases back to TopSpeed files:
+Convert a database created by `pytopspeed convert` back to TopSpeed files:
 
 ```bash
-python pytopspeed.py reverse [OPTIONS] INPUT_FILE OUTPUT_DIRECTORY
+pytopspeed reverse INPUT_FILE OUTPUT_DIRECTORY
 ```
 
 **Examples:**
 ```bash
 # Convert SQLite back to TopSpeed files
-python pytopspeed.py reverse input.sqlite output_directory/
+pytopspeed reverse input.sqlite output_directory/
 
 # With verbose output
-python pytopspeed.py reverse input.sqlite output_directory/ --verbose
+pytopspeed -v reverse input.sqlite output_directory/
 ```
+
+See [Reverse Conversion](#reverse-conversion) below for what is written back and the limits.
 
 ### List Command
 
 List contents of .phz files:
 
 ```bash
-python pytopspeed.py list [OPTIONS] PHZ_FILE
+pytopspeed list PHZ_FILE
 ```
 
 **Examples:**
 ```bash
 # List PHZ file contents
-python pytopspeed.py list assets/TxWells.phz
+pytopspeed list MyProject.phz
 ```
 
 ## 📊 Conversion Features
@@ -120,43 +133,54 @@ When converting multiple files, tables are automatically prefixed to avoid confl
 - **.mod files** → `mod_` prefix (e.g., `mod_DEPRECIATION`, `mod_MODID`)
 - **.tps files** → `tps_` prefix
 - **Other files** → `file_N_` prefix
+- A second file of the same type gets the file's position in the list added (e.g. `phd2_`)
 
 ### Data Type Conversion
 
 | TopSpeed Type | SQLite Type | Notes |
 |---------------|-------------|-------|
 | BYTE | INTEGER | 8-bit unsigned integer |
-| SHORT | INTEGER | 16-bit signed integer |
-| LONG | INTEGER | 32-bit signed integer |
-| DATE | TEXT | Format: YYYY-MM-DD |
-| TIME | TEXT | Format: HH:MM:SS |
-| STRING | TEXT | Variable length text |
+| SHORT, USHORT | INTEGER | 16-bit integer |
+| LONG, ULONG | INTEGER | 32-bit integer |
+| FLOAT, DOUBLE | REAL | NaN and infinity become `NULL` |
 | DECIMAL | REAL | Floating point number |
-| MEMO | BLOB | Binary large object |
-| BLOB | BLOB | Binary large object |
-| DOUBLE | REAL | 8-byte floating point |
-| DOUBLE_79 | REAL | Special DOUBLE fields (type 79) |
+| DATE | TEXT | Format: `YYYY-MM-DD`; `NULL` if the date is zero |
+| TIME | TEXT | Format: `HH:MM:SS.cc` |
+| STRING, CSTRING, PSTRING | TEXT | Right-trimmed; blank becomes `''` |
+| MEMO | BLOB column | Holds the memo's full text |
+| Arrays | TEXT | JSON array |
 
-### Multidimensional Arrays
+Columns follow the order of the table definition. SQLite indexes are created for TopSpeed keys whose fields map to plain (non-array) columns.
 
-The library automatically detects and converts TopSpeed multidimensional arrays to JSON format:
+### Array Fields
 
-- **Automatic Detection**: Both single-field and multi-field arrays are detected
-- **JSON Storage**: Arrays are stored as JSON in SQLite TEXT columns
-- **Type Preservation**: All data types are preserved (null vs zero, boolean values)
-- **Enhanced Parsing**: Supports all TopSpeed field types including type 79 (DOUBLE_79)
-- **Generic Binary Detection**: Automatically detects and parses binary data in STRING fields
-- **Large Table Support**: Handles tables with 100+ fields without limits
-- **Robust Recovery**: Continues parsing even when individual fields fail
+Array-like fields are stored as JSON arrays in SQLite TEXT columns:
+
+- **`DIM(n)` fields**: one JSON array column per field
+- **Dimensioned `GROUP`s**: each member becomes its own JSON array with one element per group entry; the `GROUP` itself gets no column (e.g. `FORCAST` `NUMFORM` → `VALUETYPE`, `PCODE`, `PRODVALTYPE`, `ACTION`, `VALUEREAL`, `DATEVAL`)
+- **Numbered fields**: scalars `NAME1`..`NAMEn` of the same type become one array column `NAME` (e.g. `CUMVOL` `PROD1`..`PROD5` → `PROD`); fields like `VALUE` and `VALUE2` stay separate
+- **Values**: `BYTE` elements are integers (`0`/`1` for flags, not `true`/`false`); NaN becomes `null`; zero stays zero
+
+Tables whose definition can't be parsed fall back to an older heuristic conversion path. Those tables can't be edited and written back (see below).
 
 ### Column Name Sanitization
 
-Column names are automatically sanitized for SQLite compatibility:
+Column and table names are sanitized for SQLite compatibility:
 
 - **Prefix removal**: `TIT:PROJ_DESCR` → `PROJ_DESCR`
-- **Special characters**: `.` → `_`
+- **Special characters**: spaces, `-`, `.`, `/`, `\` → `_`
 - **Numeric prefixes**: `123FIELD` → `_123FIELD`
-- **Reserved words**: `ORDER` → `ORDER_TABLE`
+- **Reserved words** (table names): `ORDER` → `ORDER_TABLE`
+
+### Reverse Conversion
+
+- Forward conversion stores what SQLite can't hold (table definitions, file-level records, the original bytes of each row) in hidden `_topspeed_*` tables. Reverse conversion only works on databases that have them; otherwise it fails with "no TopSpeed metadata".
+- Unchanged rows are written back byte for byte. Edited rows keep their record number and only the changed columns are re-encoded. Inserted rows get new record numbers; deleted rows and their memos are dropped. Index entries and record counts are rebuilt.
+- A duplicate value in a unique key is an error naming the table and key, and no file is written. A value that doesn't fit its field (too many array elements, `DECIMAL` overflow) is an error naming the column.
+- Output files keep their original names. A database made from a `.phz` produces the `.phd` and `.mod` files, not a new `.phz`.
+- Rows are matched to their source records by SQLite `rowid`. If rowids change (`VACUUM` after deletes, recreating a table), unchanged rows are still matched by content, but edited rows become new records.
+- Tables converted by the fallback path are written back unchanged, and edits to them are ignored with a warning. Index keys on field types other than `BYTE`, `SHORT`, `LONG`, `DOUBLE` and `STRING` produce a warning when their table was edited.
+- Output has been opened in PHDWin 2.11 and read with the SoftVelocity TopSpeed ODBC driver. Keep a copy of the original file.
 
 ## 🔧 Python API Usage
 
@@ -189,6 +213,7 @@ from converter.reverse_converter import ReverseConverter
 
 converter = ReverseConverter()
 results = converter.convert_sqlite_to_topspeed('input.sqlite', 'output_directory/')
+# results: success, files_created, tables_processed, records_processed, duration, errors, warnings
 ```
 
 ### Progress Tracking
@@ -205,20 +230,13 @@ results = converter.convert('input.phd', 'output.sqlite')
 
 ## 📈 Performance
 
-### Benchmarks
-
-Based on testing with `TxWells.PHD` and `TxWells.mod`:
-
-- **Single file conversion**: ~1,300 records/second
-- **Combined conversion**: ~1,650 records/second  
-- **Reverse conversion**: ~50,000 records/second
+The SQLite database is larger than the source file because it also stores the original bytes of every record for reverse conversion (in testing, a ~7 MB `.PHD` became a ~37 MB database).
 
 ### Optimization Tips
 
 1. **Batch size**: Adjust `--batch-size` for your system (default: 1000)
-2. **Memory usage**: Larger batch sizes use more memory but may be faster
-3. **SSD storage**: Use SSD storage for better I/O performance
-4. **Multiple files**: Combined conversion is more efficient than separate conversions
+2. **Memory usage**: Larger batch sizes use more memory but mean fewer insert calls
+3. **Storage**: Write the output database to a local disk rather than a network share
 
 ## 🐛 Troubleshooting
 
@@ -226,30 +244,42 @@ Based on testing with `TxWells.PHD` and `TxWells.mod`:
 
 **1. "stream read less than specified amount" errors**
 - These are parsing warnings for corrupted or incomplete table definitions
-- The conversion will continue and skip problematic tables
+- The conversion continues; such tables go through the fallback path or are skipped
 - Check the log output for details
 
 **2. "charmap codec can't decode" errors**
 - Character encoding issues in text data
-- Non-ASCII characters are handled gracefully
-- Data is preserved but may have encoding warnings
+- Text is decoded as cp1251; undecodable bytes are replaced
+- Check the log for the affected table
 
-**3. "Table name collision" warnings**
+**3. Table name collisions**
 - Multiple files have tables with the same name
 - Automatic prefixing resolves conflicts
-- Check the log for specific collision details
 
 **4. "File not found" errors**
 - Verify file paths are correct
 - Check file permissions
 - Ensure files are not locked by other applications
 
+**5. Reverse conversion fails with "no TopSpeed metadata"**
+- The database wasn't created by this version of the converter, or the `_topspeed_*` tables were removed
+- Convert the original TopSpeed file again
+
+**6. PHDWin reports "Version file is UNAVAILABLE ... File System Error" for every file**
+- After PHDWin fails to open one database it keeps showing this error for later opens
+- Restart PHDWin
+
+### Known Quirks
+
+- `-q` does not silence log output, and log lines can be printed twice.
+- On Windows, the PHZ converter can't delete its temporary extraction folder (the extracted files are still open) and logs a warning.
+
 ### Debug Mode
 
 Enable verbose logging for detailed information:
 
 ```bash
-python pytopspeed.py convert input.phd output.sqlite --verbose
+pytopspeed -v convert input.phd output.sqlite
 ```
 
 ### Log Files
@@ -269,6 +299,7 @@ See the `examples/` directory for complete working examples:
 - `convert_phz_to_sqlite.py` - PHZ file conversion
 - `convert_sqlite_to_topspeed.py` - Reverse conversion
 - `round_trip_conversion.py` - Complete round-trip example
+- `multidimensional_arrays.py` - Array fields
 
 ## 🤝 Contributing
 
@@ -276,10 +307,10 @@ See [Developer Documentation](DEVELOPER.md) for contribution guidelines.
 
 ## 📄 License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the MIT License - see the [LICENSE](../LICENSE) file for details.
 
 ## 🙏 Acknowledgments
 
 - Based on the original [pytopspeed library](https://github.com/dylangiles/pytopspeed/)
-- Modernized for Python 3.11 and construct 2.10+
+- Modernized for Python 3.8+ and construct 2.10+
 - Enhanced with SQLite conversion and reverse conversion capabilities

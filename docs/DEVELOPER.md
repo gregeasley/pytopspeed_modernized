@@ -1,6 +1,6 @@
 # Developer Documentation
 
-This document provides comprehensive information for developers working on the Pytopspeed Modernized library.
+This document provides information for developers working on the Pytopspeed Modernized library.
 
 ## 📚 Table of Contents
 
@@ -8,7 +8,9 @@ This document provides comprehensive information for developers working on the P
 - [Code Structure](#code-structure)
 - [Development Setup](#development-setup)
 - [Testing](#testing)
+- [Validating Writer Output](#validating-writer-output)
 - [Code Style](#code-style)
+- [Continuous Integration](#continuous-integration)
 - [Extension Guidelines](#extension-guidelines)
 - [Contributing](#contributing)
 - [Release Process](#release-process)
@@ -18,117 +20,136 @@ This document provides comprehensive information for developers working on the P
 ### High-Level Architecture
 
 ```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   TopSpeed      │    │   Pytopspeed    │    │   SQLite        │
-│   Files         │───▶│   Parser        │───▶│   Database      │
-│   (.phd, .mod)  │    │   (Modernized)  │    │   (.sqlite)     │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-                                │
-                                ▼
-                       ┌─────────────────┐
-                       │   Converter     │
-                       │   Components    │
-                       └─────────────────┘
+                 convert                                   reverse
+TopSpeed files  ────────▶  pytopspeed reader  ──▶  SqliteConverter  ──▶  SQLite database
+(.phd/.mod/.tps)           (src/pytopspeed)        + RecordCodec          (data tables +
+     ▲                                             + FileCapture           _topspeed_* metadata)
+     │                                                                          │
+     └──────────── pytopspeed.tpswriter ◀── ReverseConverter ◀─────────────────┘
+                   (pages, B-tree, header)     + RecordCodec (encode)
 ```
 
 ### Component Overview
 
-1. **TopSpeed Parser** (`src/pytopspeed/`): Modernized parser for reading TopSpeed files
-2. **Schema Mapper** (`src/converter/schema_mapper.py`): Maps TopSpeed schemas to SQLite
-3. **SQLite Converter** (`src/converter/sqlite_converter.py`): Handles data migration
-4. **PHZ Converter** (`src/converter/phz_converter.py`): Handles zip archives
-5. **Reverse Converter** (`src/converter/reverse_converter.py`): Converts back to TopSpeed
-6. **CLI Interface** (`src/cli/`): Command-line interface
+1. **TopSpeed reader** (`src/pytopspeed/`): parses the file header, pages, records and table definitions
+2. **TopSpeed writer** (`src/pytopspeed/tpswriter.py`): builds a complete TopSpeed file from raw records
+   (prefix- and RLE-compressed pages, B-tree control pages, header/block table), plus builders for data,
+   memo, metadata and index records
+3. **Record codec** (`src/converter/record_codec.py`): one column layout and one decode/encode path per
+   table, shared by the forward and reverse converters
+4. **TopSpeed metadata** (`src/converter/topspeed_metadata.py`): stores what the reverse converter needs in
+   hidden `_topspeed_*` tables during forward conversion
+5. **SQLite converter** (`src/converter/sqlite_converter.py`): forward conversion (`convert`, `convert_multiple`)
+6. **PHZ converter** (`src/converter/phz_converter.py`): extracts `.phz` (zip) archives and converts their contents
+7. **Reverse converter** (`src/converter/reverse_converter.py`): rebuilds the original TopSpeed file(s) from
+   a converted (and possibly edited) database
+8. **CLI** (`src/cli/main.py`): `pytopspeed convert | reverse | list`
 
-### Data Flow
+### Forward Data Flow
 
 ```
-TopSpeed File → Parser → Schema Mapper → SQLite Converter → SQLite Database
-                     ↓
-               Table Definitions
-                     ↓
-               Field Mappings
-                     ↓
-               Data Conversion
+TopSpeed file → TPS reader → table definition → RecordCodec column layout → CREATE TABLE / indexes
+                                                → decode each record      → INSERT rows
+                           → FileCapture        → _topspeed_file/_table/_record/_row/_memo
 ```
+
+Tables whose definition parses go through `RecordCodec`. A table whose definition can't be parsed falls
+back to the older multidimensional/enhanced parsing path (`multidimensional_handler.py` and the
+`_create_enhanced_table_definition` code in `sqlite_converter.py`); such tables are written back unchanged
+by the reverse converter.
+
+### Reverse Data Flow
+
+`ReverseConverter.convert_sqlite_to_topspeed(sqlite_file, output_dir)` reads `_topspeed_file` to find the
+source files, then for each table compares the SQLite rows (matched by rowid, falling back to content)
+with the stored original payloads: unchanged rows are copied byte for byte, edited rows are re-encoded
+(only the changed columns), inserted rows get new record numbers, and deleted rows and their memos are
+dropped. Index entries and record-count metadata records are regenerated, then `tpswriter.build_tps`
+writes the file under its original name.
 
 ## 📁 Code Structure
 
 ### Directory Layout
 
 ```
-pytopspeed_modernized/
-├── src/                          # Source code
-│   ├── pytopspeed/              # Modernized TopSpeed parser
-│   │   ├── __init__.py
-│   │   ├── tps.py               # Main TPS class
-│   │   ├── tpspage.py           # Page handling
-│   │   ├── tpsrecord.py         # Record parsing
-│   │   ├── tpstable.py          # Table definitions
-│   │   ├── tpscrypt.py          # Encryption/decryption
-│   │   └── utils.py             # Utility functions
-│   ├── converter/               # Conversion components
-│   │   ├── __init__.py
-│   │   ├── schema_mapper.py     # Schema mapping
-│   │   ├── sqlite_converter.py  # SQLite conversion
-│   │   ├── phz_converter.py     # PHZ file handling
-│   │   └── reverse_converter.py # Reverse conversion
-│   └── cli/                     # Command-line interface
-│       ├── __init__.py
-│       └── main.py              # CLI entry point
-├── tests/                       # Test suite
-│   ├── unit/                    # Unit tests
-│   ├── integration/             # Integration tests
-│   └── debug/                   # Debug scripts
-├── examples/                    # Example scripts
-├── docs/                        # Documentation
-├── assets/                      # Sample data files
-└── scripts/                     # Utility scripts
+phdwin_reader/
+├── src/
+│   ├── pytopspeed/                  # TopSpeed reader and writer
+│   │   ├── tps.py                   # TPS class: header, pages, table iteration
+│   │   ├── tpspage.py               # Page header / decompression
+│   │   ├── tpsrecord.py             # Record parsing
+│   │   ├── tpstable.py              # Table definitions (portions joined in portion order)
+│   │   ├── tpscrypt.py              # Encryption/decryption
+│   │   ├── tpswriter.py             # TopSpeed file writer
+│   │   └── utils.py
+│   ├── converter/
+│   │   ├── sqlite_converter.py      # TopSpeed -> SQLite
+│   │   ├── phz_converter.py         # .phz archives
+│   │   ├── reverse_converter.py     # SQLite -> TopSpeed
+│   │   ├── record_codec.py          # Column layout, decode/encode of records
+│   │   ├── topspeed_metadata.py     # _topspeed_* metadata tables
+│   │   ├── schema_mapper.py         # Name sanitizing, type mapping (fallback path)
+│   │   ├── multidimensional_handler.py  # Array detection (fallback path)
+│   │   ├── batch_processor.py, data_validator.py, performance_optimizer.py,
+│   │   ├── robust_converter.py, error_handler.py,
+│   │   └── resilience_config.py, resilience_enhancements.py
+│   └── cli/main.py                  # CLI entry point (console script `pytopspeed`)
+├── tests/
+│   ├── conftest.py                  # Shared fixtures, markers, autouse mocks
+│   ├── unit/                        # Unit tests (run by CI) + tps_builder.py
+│   ├── integration/                 # Integration tests
+│   └── performance/                 # Performance tests (skipped by default)
+├── examples/                        # Example scripts
+├── docs/
+├── assets/                          # TxWells sample files (local checks only)
+├── build_package.py, release.py     # Packaging helpers
+└── setup.py, setup.cfg, pyproject.toml
 ```
 
 ### Key Classes and Their Responsibilities
 
-#### TPS (TopSpeed Parser)
+#### TPS (TopSpeed reader)
 - **File**: `src/pytopspeed/tps.py`
 - **Purpose**: Main interface for reading TopSpeed files
 - **Key Methods**: `__init__()`, `set_current_table()`, `__iter__()`
 
+#### RecordCodec
+- **File**: `src/converter/record_codec.py`
+- **Purpose**: Builds the column layout for a table definition and converts records both ways
+- **Key Methods**: `data_columns`, `memo_columns`, `index_columns()`, `decode()`, `encode()`, `encode_memo()`
+- **Layout rules**: scalar field → column named after the field without its `PRE:` prefix; `DIM(n)` field →
+  JSON array column; members of a dimensioned `GROUP` → one JSON array per member (the group itself gets no
+  column); numbered scalars `NAME1..NAMEn` (suffixes exactly 1..n, same type, evenly spaced) → one JSON
+  array `NAME`; each memo → its own TEXT column. Columns follow definition order.
+
 #### SqliteConverter
 - **File**: `src/converter/sqlite_converter.py`
-- **Purpose**: Converts TopSpeed data to SQLite format
-- **Key Methods**: `convert()`, `convert_multiple()`, `_create_schema()`, `_migrate_table_data()`
-- **Enhanced Features**: 
-  - `_create_enhanced_table_definition()`: Advanced table definition parsing
-  - `_parse_multidimensional_field_value_from_binary()`: Enhanced field parsing
-  - `_parse_multidimensional_array_field_from_binary()`: Array field parsing
-  - Comprehensive type mapping for all TopSpeed field types
-  - Generic binary data detection for misidentified STRING fields
-  - Dynamic field offset calculation for complex table structures
-  - Large table support (100+ fields) without artificial limits
-
-#### TopSpeedToSQLiteMapper
-- **File**: `src/converter/schema_mapper.py`
-- **Purpose**: Maps TopSpeed table definitions to SQLite schema
-- **Key Methods**: `sanitize_field_name()`, `sanitize_table_name()`, `generate_create_table_sql()`
+- **Purpose**: Converts TopSpeed data to SQLite
+- **Key Methods**: `convert()`, `convert_multiple()` (prefixes tables `phd_` / `mod_` / `tps_` when several
+  files go into one database)
 
 #### PhzConverter
 - **File**: `src/converter/phz_converter.py`
-- **Purpose**: Handles .phz (zip) files containing TopSpeed files
 - **Key Methods**: `convert_phz()`, `list_phz_contents()`
 
 #### ReverseConverter
 - **File**: `src/converter/reverse_converter.py`
-- **Purpose**: Converts SQLite databases back to TopSpeed files
-- **Key Methods**: `convert_sqlite_to_topspeed()`, `_write_topspeed_file()`
+- **Key Method**: `convert_sqlite_to_topspeed(sqlite_file, output_dir)` → dict with `success`,
+  `files_created`, `tables_processed`, `records_processed`, `duration`, `errors`, `warnings`
+- Requires a database created by this version (it needs the `_topspeed_*` tables)
+
+#### tpswriter
+- **File**: `src/pytopspeed/tpswriter.py`
+- **Key Functions**: `build_tps()`, `data_record()`, `memo_records()`, `metadata_record()`,
+  `index_records()`, `index_key_bytes()`, `rle_compress()` / `rle_decompress()`, `read_raw_records()`
+- See [phd_format_analysis.md](phd_format_analysis.md) for the file format details the writer implements.
 
 ## 🛠️ Development Setup
 
 ### Prerequisites
 
-- Python 3.8+ (3.11 recommended)
+- Python 3.8+ (CI tests 3.8 to 3.12)
 - Git
-- Conda or virtual environment
-- Code editor (VS Code, PyCharm, etc.)
 
 ### Setup Steps
 
@@ -138,51 +159,20 @@ pytopspeed_modernized/
    cd pytopspeed_modernized
    ```
 
-2. **Create development environment**:
-   ```bash
-   conda create -n pytopspeed_modernized_dev python=3.11
-   conda activate pytopspeed_modernized_dev
-   ```
-
-3. **Install dependencies**:
+2. **Create an environment** (conda or venv), then **install**:
    ```bash
    pip install -r requirements.txt
-   pip install -e .  # Install in development mode
+   pip install -e .            # installs the `pytopspeed` console script
+   pip install -e .[dev]       # optional: pytest, pytest-cov, black, flake8, mypy
    ```
 
-4. **Install development dependencies**:
+3. **Verify setup**:
    ```bash
-   pip install pytest-cov black flake8 mypy
+   python -m pytest tests/unit -q
+   python src/cli/main.py --help     # or `pytopspeed --help` after `pip install -e .`
    ```
 
-5. **Verify setup**:
-   ```bash
-   python -m pytest tests/unit/ -v
-   python pytopspeed.py --help
-   ```
-
-### IDE Configuration
-
-#### VS Code
-
-Create `.vscode/settings.json`:
-```json
-{
-    "python.defaultInterpreterPath": "./venv/bin/python",
-    "python.linting.enabled": true,
-    "python.linting.flake8Enabled": true,
-    "python.formatting.provider": "black",
-    "python.testing.pytestEnabled": true,
-    "python.testing.pytestArgs": ["tests/"]
-}
-```
-
-#### PyCharm
-
-1. Open project in PyCharm
-2. Configure Python interpreter to use the conda environment
-3. Enable pytest as test runner
-4. Configure code style to use Black formatter
+Global options go before the subcommand: `python src/cli/main.py -v convert in.phd out.sqlite`.
 
 ## 🧪 Testing
 
@@ -190,470 +180,183 @@ Create `.vscode/settings.json`:
 
 ```
 tests/
-├── unit/                        # Unit tests
-│   ├── test_tps_parser.py      # Parser tests
-│   ├── test_schema_mapper.py   # Schema mapper tests
-│   ├── test_sqlite_converter.py # SQLite converter tests
-│   ├── test_phz_converter.py   # PHZ converter tests
-│   ├── test_reverse_converter.py # Reverse converter tests
-│   └── test_combined_conversion.py # Combined conversion tests
-├── integration/                 # Integration tests
-│   ├── test_end_to_end_conversion.py
-│   ├── test_performance.py
-│   └── test_phd_parser.py
-├── debug/                       # Debug scripts
-└── conftest.py                  # Pytest configuration
+├── conftest.py              # fixtures, markers, --run-performance option, autouse mocks
+├── unit/                    # 358 tests; the only suite CI runs
+│   ├── tps_builder.py       # builds synthetic TopSpeed files for tests
+│   ├── test_tpswriter.py, test_record_codec.py, test_reverse_converter.py,
+│   ├── test_array_schema_consistency.py, test_tps_parser.py, test_sqlite_converter*.py, ...
+├── integration/             # 18 tests
+└── performance/             # 14 tests, skipped unless --run-performance
 ```
 
 ### Running Tests
 
 ```bash
-# Run all unit tests
-python -m pytest tests/unit/ -v
+# Unit + integration (376 tests)
+python -m pytest tests/unit tests/integration
 
-# Run specific test file
-python -m pytest tests/unit/test_tps_parser.py -v
+# Unit tests only (what CI runs)
+python -m pytest tests/unit
 
-# Run with coverage
-python -m pytest tests/unit/ --cov=src --cov-report=html
+# Only tests that use the real TopSpeed reader/writer
+python -m pytest tests/unit -m real_topspeed
 
-# Run integration tests
-python -m pytest tests/integration/ -v
+# Performance tests
+python -m pytest tests/performance --run-performance
 
-# Run all tests
-python -m pytest tests/ -v
+# Coverage (needs pytest-cov)
+python -m pytest tests/unit --cov=src --cov-report=html
 ```
 
-### Writing Tests
+`pyproject.toml` sets `--strict-markers`, so new markers must be registered (see `pytest_configure` in
+`tests/conftest.py`: `performance`, `slow`, `memory`, `real_topspeed`; plus `slow`, `integration`, `unit`
+in `pyproject.toml`).
 
-#### Unit Test Example
+### Mocks and the `real_topspeed` Marker
+
+`tests/conftest.py` has an autouse fixture (`mock_external_dependencies`) that replaces `TPS.__init__` and
+`TpsRecordsList` with mocks for every test, so most converter tests never touch a real file. Tests that
+read or write real TopSpeed files must opt out with:
 
 ```python
-import pytest
-from unittest.mock import Mock, patch
-from converter.sqlite_converter import SqliteConverter
-
-class TestSqliteConverter:
-    def test_convert_single_file(self, sample_phd_file, temp_sqlite_db):
-        """Test converting a single PHD file to SQLite."""
-        converter = SqliteConverter()
-        results = converter.convert(sample_phd_file, temp_sqlite_db)
-        
-        assert results['success'] is True
-        assert results['tables_created'] > 0
-        assert results['total_records'] > 0
-        assert len(results['errors']) == 0
+pytestmark = pytest.mark.real_topspeed
 ```
 
-#### Integration Test Example
+(as `test_tpswriter.py` and `test_reverse_converter.py` do).
+
+### Test Data: Synthetic Only
+
+Tests must use synthetic data. The TxWells sample files in `assets/` are not shipped and are not used by CI.
+Build test files with `tests/unit/tps_builder.py`, which assembles a TopSpeed file from table definitions,
+rows, indexes and memos using the writer's record builders:
 
 ```python
-import pytest
-import sqlite3
-from converter.sqlite_converter import SqliteConverter
-
-def test_end_to_end_conversion():
-    """Test complete conversion workflow."""
-    converter = SqliteConverter()
-    results = converter.convert('assets/TxWells.PHD', 'test_output.sqlite')
-    
-    # Verify conversion succeeded
-    assert results['success'] is True
-    
-    # Verify database structure
-    conn = sqlite3.connect('test_output.sqlite')
-    cursor = conn.cursor()
-    cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-    tables = cursor.fetchall()
-    assert len(tables) > 0
-    
-    # Verify data
-    cursor.execute("SELECT COUNT(*) FROM OWNER")
-    count = cursor.fetchone()[0]
-    assert count > 0
-    
-    conn.close()
+from tps_builder import build_file, field, index, memo, table_definition
 ```
 
-### Test Fixtures
+`build_file(path, tables)` writes the file; `field()`, `memo()`, `index()` and `table_definition()` describe
+the schema; `wells_table()` / `well_payload()` provide a ready-made example table.
 
-Common fixtures are defined in `tests/conftest.py`:
+Some older integration scripts still reference `assets/TxWells.*`:
+`tests/integration/test_end_to_end_conversion.py` is not collected by pytest (its class defines
+`__init__`) and is a manual script; `test_mod_conversion.py` and `test_performance.py` run under the
+conftest mocks. Use the TxWells files only for local manual checks, never in committed tests.
 
-```python
-@pytest.fixture
-def sample_phd_file():
-    """Path to sample PHD file."""
-    return 'assets/TxWells.PHD'
+## ✅ Validating Writer Output
 
-@pytest.fixture
-def temp_sqlite_db(tmp_path):
-    """Temporary SQLite database path."""
-    return str(tmp_path / 'test.db')
+Unit tests check the writer against the reader, but the reader is more forgiving than Clarion/PHDWin.
+The practical local oracle for "will PHDWin accept this file" is the 32-bit SoftVelocity TopSpeed ODBC
+driver (`c4otrx.dll` read-only, `c4otsx.dll` read-write). It is 32-bit only, so use 32-bit PowerShell
+(`%WINDIR%\SysWOW64\WindowsPowerShell\v1.0\powershell.exe`) and `System.Data.Odbc`:
 
-@pytest.fixture
-def mock_tps():
-    """Mock TPS object for testing."""
-    tps = Mock()
-    tps.tables = Mock()
-    tps.tables.get_definition.return_value = Mock()
-    return tps
+```powershell
+param([string]$File, [string]$Table)
+$conn = New-Object System.Data.Odbc.OdbcConnection("Driver={SoftVelocity Topspeed driver Read-Only (*.tps)};DBQ=$File\!;Extension=phd")
+$conn.Open()
+$conn.GetSchema('Tables') | Select-Object -ExpandProperty TABLENAME
+$cmd = $conn.CreateCommand()
+$cmd.CommandText = "SELECT * FROM `"$Table`""
+$reader = $cmd.ExecuteReader()
+$rows = 0
+while ($reader.Read()) { $rows++ }
+$reader.Close()
+"$Table rows: $rows"
+$conn.Close()
 ```
+
+Notes:
+- The table list column from `GetSchema('Tables')` is `TABLENAME`.
+- `ExecuteScalar()` with `COUNT(*)` crashes .NET with this driver; count with a data reader as above.
+- Quote reserved-word table names such as `ORDER` and `USER`.
+- The driver crashes on files whose header block table mixes page sizes within a block (see the format reference).
+
+Final check in PHDWin itself. **Gotcha**: once PHDWin fails to open a database it keeps reporting
+"Version file is UNAVAILABLE ... File System Error" for every later open, including valid files, until
+PHDWin is restarted. Restart PHDWin before concluding that a file is bad.
 
 ## 🎨 Code Style
 
-### Python Style Guide
-
-We follow PEP 8 with some modifications:
-
-- **Line length**: 100 characters (instead of 80)
-- **Import order**: Standard library, third-party, local imports
-- **Docstrings**: Google style
-- **Type hints**: Required for all public methods
-
-### Code Formatting
-
-We use Black for code formatting:
+- PEP 8; Black is configured in `pyproject.toml` (`black src/ tests/`)
+- Docstrings: Google style; type hints on public functions
+- flake8 and mypy are available via the `dev` extra:
 
 ```bash
-# Format all Python files
-black src/ tests/ examples/
-
-# Check formatting without changing files
-black --check src/ tests/ examples/
+flake8 src/ --count --select=E9,F63,F7,F82 --show-source --statistics   # the blocking CI check
+mypy src/ --ignore-missing-imports                                       # report-only in CI
 ```
 
-### Linting
+## 🔁 Continuous Integration
 
-We use flake8 for linting:
+GitHub Actions (`.github/workflows/ci.yml`) runs on pushes to `master`/`develop`, pull requests to
+`master`, and published releases:
 
-```bash
-# Run linting
-flake8 src/ tests/ examples/
+- **test** (ubuntu-24.04, Python 3.8, 3.9, 3.10, 3.11, 3.12): flake8 syntax/undefined-name errors
+  (E9, F63, F7, F82) are blocking; the full flake8 report is informational; mypy runs but does not fail the
+  build (the codebase has a large number of pre-existing type errors); `pytest tests/unit/` with coverage,
+  uploaded to Codecov (non-blocking).
+- **build**: `python -m build` and `twine check dist/*`.
+- **publish-testpypi**: on pull requests, uploads to TestPyPI with `--skip-existing`.
+- **publish-pypi**: on published releases, uploads to PyPI.
 
-# Ignore specific errors
-flake8 --ignore=E203,W503 src/ tests/ examples/
-```
-
-### Type Checking
-
-We use mypy for type checking:
-
-```bash
-# Run type checking
-mypy src/
-
-# With strict mode
-mypy --strict src/
-```
-
-### Pre-commit Hooks
-
-Create `.pre-commit-config.yaml`:
-
-```yaml
-repos:
-  - repo: https://github.com/psf/black
-    rev: 22.3.0
-    hooks:
-      - id: black
-        language_version: python3.11
-  - repo: https://github.com/pycqa/flake8
-    rev: 4.0.1
-    hooks:
-      - id: flake8
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v0.950
-    hooks:
-      - id: mypy
-        additional_dependencies: [types-all]
-```
-
-Install pre-commit hooks:
-
-```bash
-pip install pre-commit
-pre-commit install
-```
-
-## 🚀 Recent Technical Improvements
-
-### Enhanced Multidimensional Parsing
-
-The library has undergone significant improvements to handle complex TopSpeed table structures:
-
-#### Comprehensive Type Mapping
-- **All TopSpeed Types Supported**: Including type 79 (DOUBLE_79), type 83/82 (SHORT), type 0 (DOUBLE), etc.
-- **Dynamic Type Detection**: Automatically maps raw type codes to appropriate Python types
-- **Generic Binary Data Detection**: Identifies when STRING fields contain binary data and parses them as integers
-
-#### Advanced Field Offset Calculation
-- **Dynamic Offset Calculation**: Replaces fixed offset increments with calculated field definition sizes
-- **Type-Specific Handling**: Special handling for DOUBLE_79 fields with extra metadata bytes
-- **Robust Error Recovery**: Continues parsing even when individual fields fail
-
-#### Large Table Support
-- **No Artificial Limits**: Removed 50-field limit for enhanced table definition parsing
-- **Scalable Architecture**: Handles tables with 100+ fields efficiently
-- **Memory Optimization**: Efficient processing of large table structures
-
-#### Technical Implementation Details
-
-```python
-# Enhanced field type mapping
-FIELD_TYPE_STRUCT = Enum(Byte,
-    BYTE=1, SHORT=2, DATE=3, TIME=4, LONG=5, STRING=6, DECIMAL=7, MEMO=8, BLOB=9,
-    CSTRING=10, PSTRING=11, PICTURE=12, DOUBLE=13, DOUBLE_79=79, _default_='STRING'
-)
-
-# Generic binary data detection
-if type_code in ['STRING', 'CSTRING', '6', '10']:
-    if len(field_data) <= 4 and any(byte < 32 or byte > 126 for byte in field_data if byte != 0):
-        # Parse as integer based on field size
-        if len(field_data) >= 4:
-            return struct.unpack('<I', field_data[:4])[0]  # 32-bit integer
-        elif len(field_data) >= 2:
-            return struct.unpack('<H', field_data[:2])[0]  # 16-bit integer
-        elif len(field_data) >= 1:
-            return field_data[0]  # 8-bit integer
-```
+Integration and performance tests are not run in CI.
 
 ## 🔧 Extension Guidelines
 
-### Adding New File Formats
+### Adding a Field Type
 
-To add support for a new TopSpeed file format:
+Field types are defined in `FIELD_TYPE_STRUCT` (`src/pytopspeed/tpstable.py`). To support a new type in
+the conversion path:
 
-1. **Update the parser** (`src/pytopspeed/tps.py`):
-   ```python
-   def _detect_file_type(self, filename: str) -> str:
-       ext = os.path.splitext(filename)[1].lower()
-       if ext in ['.phd', '.mod', '.tps', '.newformat']:
-           return 'topspeed'
-       # ...
-   ```
+1. Add decoding and encoding in `RecordCodec.decode_element()` / `encode_element()`
+   (`src/converter/record_codec.py`) and the SQLite column type to `SQLITE_TYPES`.
+2. If the type can be an index key field, add its key encoding to `index_key_bytes()` in
+   `src/pytopspeed/tpswriter.py` and verify it against a file written by TopSpeed; until then add nothing to
+   `VERIFIED_KEY_TYPES` (the reverse converter warns when an edited table uses unverified key types).
+3. Add round-trip tests using `tests/unit/tps_builder.py`.
 
-2. **Update the converter** (`src/converter/sqlite_converter.py`):
-   ```python
-   def _get_file_prefix(self, filename: str) -> str:
-       ext = os.path.splitext(filename)[1].lower()
-       if ext == '.newformat':
-           return 'new_'
-       # ...
-   ```
+### Adding a CLI Command
 
-3. **Add tests**:
-   ```python
-   def test_new_format_conversion(self):
-       # Test new format conversion
-       pass
-   ```
-
-4. **Update documentation**:
-   - Add to supported formats list
-   - Update examples
-   - Add to API documentation
-
-### Adding New Data Types
-
-To add support for a new TopSpeed data type:
-
-1. **Update the parser** (`src/pytopspeed/tpsrecord.py`):
-   ```python
-   # Add new data type parsing logic
-   def _parse_new_type(self, data: bytes) -> Any:
-       # Parse new data type
-       pass
-   ```
-
-2. **Update the schema mapper** (`src/converter/schema_mapper.py`):
-   ```python
-   TYPE_MAPPING = {
-       # ... existing mappings
-       'NEW_TYPE': 'SQLITE_TYPE',
-   }
-   ```
-
-3. **Update the converter** (`src/converter/sqlite_converter.py`):
-   ```python
-   def _convert_field_value(self, field: Any, value: Any) -> Any:
-       if field.type == 'NEW_TYPE':
-           return self._convert_new_type(value)
-       # ...
-   ```
-
-4. **Add tests**:
-   ```python
-   def test_new_type_conversion(self):
-       # Test new type conversion
-       pass
-   ```
-
-### Adding New CLI Commands
-
-To add a new CLI command:
-
-1. **Update the CLI** (`src/cli/main.py`):
-   ```python
-   def new_command(args) -> int:
-       """Handle new command."""
-       # Implementation
-       return 0
-   
-   def main():
-       # Add subparser
-       new_parser = subparsers.add_parser('new', help='New command')
-       new_parser.add_argument('input', help='Input file')
-       # ...
-   ```
-
-2. **Add tests**:
-   ```python
-   def test_new_command():
-       # Test new command
-       pass
-   ```
-
-3. **Update documentation**:
-   - Add to README
-   - Add to API documentation
-   - Add examples
+Add a subparser and handler in `src/cli/main.py`, add tests, and update `docs/` and `README.md`.
 
 ## 🤝 Contributing
 
-### Contribution Process
-
-1. **Fork the repository**
-2. **Create a feature branch**:
-   ```bash
-   git checkout -b feature/new-feature
-   ```
-3. **Make changes**:
-   - Write code following the style guide
-   - Add tests for new functionality
-   - Update documentation
-4. **Run tests**:
-   ```bash
-   python -m pytest tests/ -v
-   ```
-5. **Commit changes**:
-   ```bash
-   git commit -m "Add new feature"
-   ```
-6. **Push to fork**:
-   ```bash
-   git push origin feature/new-feature
-   ```
-7. **Create pull request**
-
-### Pull Request Guidelines
-
-- **Title**: Clear, descriptive title
-- **Description**: Detailed description of changes
-- **Tests**: All tests must pass
-- **Documentation**: Update relevant documentation
-- **Examples**: Add examples for new features
-
-### Code Review Process
-
-1. **Automated checks**: All CI checks must pass
-2. **Code review**: At least one reviewer approval required
-3. **Testing**: Manual testing of new features
-4. **Documentation**: Documentation must be updated
+1. Create a feature branch from `master`.
+2. Make changes, with tests (synthetic data only) and documentation updates.
+3. Run `python -m pytest tests/unit tests/integration` and the blocking flake8 check above.
+4. Open a pull request to `master`; CI must pass.
 
 ## 🚀 Release Process
 
 ### Version Numbering
 
-We use semantic versioning (MAJOR.MINOR.PATCH):
+Semantic versioning (MAJOR.MINOR.PATCH). The current version is 1.1.3; unreleased changes are listed under
+`[Unreleased]` in `CHANGELOG.md`.
 
-- **MAJOR**: Breaking changes
-- **MINOR**: New features, backward compatible
-- **PATCH**: Bug fixes, backward compatible
+The version string is duplicated and must be updated in all of:
+`setup.py`, `setup.cfg`, `pyproject.toml`, `src/pytopspeed/__init__.py` and `src/cli/__init__.py`
+(the CLI's `--version` reads `cli.__version__`).
 
 ### Release Steps
 
-1. **Update version** in `setup.py` and `__init__.py`
-2. **Update changelog** with new features and fixes
-3. **Run full test suite**:
+1. Update the version in the files above and move the `[Unreleased]` entries in `CHANGELOG.md` under the
+   new version.
+2. Run the tests: `python -m pytest tests/unit tests/integration`.
+3. Either publish a GitHub release (CI builds and uploads to PyPI), or run the helper script locally:
    ```bash
-   python -m pytest tests/ -v
-   python -m pytest tests/integration/ -v
+   python release.py testpypi   # check git status, run tests, build, twine check, upload to TestPyPI
+   python release.py pypi       # same, upload to PyPI, then tag v<version> and push tags
    ```
-4. **Create release tag**:
-   ```bash
-   git tag -a v1.1.2 -m "Release version 1.1.2"
-   git push origin v1.1.2
-   ```
-5. **Build and upload** to PyPI:
-   ```bash
-   python -m build
-   python -m twine upload dist/*
-   ```
-
-### Release Checklist
-
-- [ ] All tests pass
-- [ ] Documentation is updated
-- [ ] Version numbers are updated
-- [ ] Changelog is updated
-- [ ] Release notes are written
-- [ ] Tag is created and pushed
-- [ ] Package is uploaded to PyPI
-
-## 📊 Performance Considerations
-
-### Memory Usage
-
-- **Batch processing**: Use appropriate batch sizes
-- **Streaming**: Process large files in chunks
-- **Cleanup**: Properly close file handles and database connections
-
-### CPU Usage
-
-- **Parallel processing**: Consider multiprocessing for large files
-- **Optimization**: Profile code and optimize bottlenecks
-- **Caching**: Cache frequently accessed data
-
-### I/O Optimization
-
-- **SSD storage**: Use SSD for better I/O performance
-- **Buffer sizes**: Optimize buffer sizes for your system
-- **Compression**: Consider compression for large datasets
+   `build_package.py` deletes `build/`, `dist/` and `*.egg-info`, then builds the package without uploading.
 
 ## 🔍 Debugging
 
-### Debug Tools
-
-- **pdb**: Python debugger
-- **logging**: Comprehensive logging
-- **profiling**: cProfile for performance analysis
-- **memory profiling**: memory_profiler for memory usage
-
-### Debug Configuration
-
-```python
-import logging
-import pdb
-
-# Enable debug logging
-logging.basicConfig(level=logging.DEBUG)
-
-# Set breakpoint
-pdb.set_trace()
-```
-
-### Common Debug Scenarios
-
-1. **Parsing errors**: Check file format and structure
-2. **Memory issues**: Monitor memory usage and batch sizes
-3. **Performance issues**: Profile code and identify bottlenecks
-4. **Data corruption**: Verify input files and conversion logic
+- Run the CLI with `-v` (before the subcommand) for debug logging.
+- `pytopspeed.tpswriter.read_raw_records(tps)` returns every raw record of an open file as
+  `(header size, bytes)` pairs, which is useful for diffing an original file against a rebuilt one.
+- For files that the reader accepts but PHDWin rejects, check with the ODBC driver (above).
 
 ## 📚 Additional Resources
 
-- [Python Style Guide (PEP 8)](https://pep8.org/)
-- [Google Python Style Guide](https://google.github.io/styleguide/pyguide.html)
+- [TopSpeed / PHD format reference](phd_format_analysis.md)
 - [pytest Documentation](https://docs.pytest.org/)
-- [Black Code Formatter](https://black.readthedocs.io/)
-- [mypy Type Checker](https://mypy.readthedocs.io/)
 - [SQLite Documentation](https://www.sqlite.org/docs.html)

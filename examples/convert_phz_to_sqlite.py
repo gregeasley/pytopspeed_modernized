@@ -87,8 +87,8 @@ def convert_phz_file(phz_file: str, output_file: str, batch_size: int = 1000):
         for file_path, file_result in results['file_results'].items():
             status = "✅ SUCCESS" if file_result.get('success', True) else "❌ FAILED"
             print(f"  {os.path.basename(file_path)}: {status}")
-            print(f"    Tables: {file_result.get('tables', 0)}")
-            print(f"    Records: {file_result.get('records', 0)}")
+            print(f"    Tables: {file_result.get('tables_created', 0)}")
+            print(f"    Records: {file_result.get('records_migrated', 0)}")
     
     if results['success']:
         print(f"\n✅ PHZ conversion completed successfully!")
@@ -106,7 +106,10 @@ def convert_phz_file(phz_file: str, output_file: str, batch_size: int = 1000):
             table_count = cursor.fetchone()[0]
             
             # Get total record count
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            # Skip the hidden _topspeed_* metadata tables (used by reverse conversion)
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' "
+                           "AND name NOT LIKE '!_topspeed!_%' ESCAPE '!' "
+                           "AND name NOT LIKE 'sqlite!_%' ESCAPE '!'")
             tables = cursor.fetchall()
             
             total_records = 0

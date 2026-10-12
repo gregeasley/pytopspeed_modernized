@@ -7,14 +7,14 @@ This guide provides detailed installation instructions for the Pytopspeed Modern
 ### System Requirements
 
 - **Operating System**: Windows, macOS, or Linux
-- **Python**: Version 3.8 or higher (3.11 recommended)
-- **Memory**: At least 4GB RAM (8GB+ recommended for large databases)
-- **Storage**: Sufficient disk space for input files and output databases
+- **Python**: Version 3.8 to 3.12 (the versions tested in CI)
+- **Memory**: The converter keeps the source file's records in memory while converting, so larger files need more RAM
+- **Storage**: Room for the input files and the output database. The SQLite database is several times larger than the TopSpeed file, because it also keeps the original record bytes for reverse conversion.
 
 ### Required Software
 
 - **Python 3.8+**: [Download from python.org](https://www.python.org/downloads/)
-- **Conda** (recommended): [Download Anaconda or Miniconda](https://docs.conda.io/en/latest/miniconda.html)
+- **Conda** (optional): [Download Anaconda or Miniconda](https://docs.conda.io/en/latest/miniconda.html)
 
 ## 🚀 Installation Methods
 
@@ -26,6 +26,8 @@ This is the easiest and recommended installation method for most users.
 # Install directly from PyPI
 pip install pytopspeed-modernized
 ```
+
+This installs the `pytopspeed` command.
 
 ### Method 2: Install from Source
 
@@ -53,19 +55,23 @@ conda activate pytopspeed_modernized
 ```bash
 # Install in development mode
 pip install -e .
+
+# Or include the development tools (pytest, pytest-cov, black, flake8, mypy)
+pip install -e .[dev]
 ```
 
 #### Step 4: Verify Installation
 
 ```bash
 # Test the CLI
-python pytopspeed.py --help
+pytopspeed --help
+pytopspeed --version
 
-# Run unit tests
-python -m pytest tests/unit/ -v
+# Run the tests (needs the [dev] extras or requirements.txt)
+python -m pytest tests/unit tests/integration
 ```
 
-### Method 2: Virtual Environment
+### Method 3: Virtual Environment
 
 If you prefer using Python's built-in virtual environment:
 
@@ -99,16 +105,18 @@ python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
+`requirements.txt` installs the dependencies only, not the package, so there is no `pytopspeed` command. Run `pip install -e .` as well if you want it.
+
 #### Step 4: Verify Installation
 
 ```bash
-# Test the CLI
-python pytopspeed.py --help
+# Test the CLI from the checkout
+python src/cli/main.py --help
 ```
 
-### Method 3: System-wide Installation
+### Method 4: System-wide Installation
 
-**Note**: Not recommended for development, but suitable for production use.
+**Note**: Not recommended for development.
 
 #### Step 1: Clone the Repository
 
@@ -117,34 +125,25 @@ git clone https://github.com/gregeasley/pytopspeed_modernized
 cd pytopspeed_modernized
 ```
 
-#### Step 2: Install Dependencies
+#### Step 2: Install the Package
 
 ```bash
-# Install required packages
-pip install -r requirements.txt
-```
-
-#### Step 3: Install the Package (Optional)
-
-```bash
-# Install in development mode
-pip install -e .
-
-# Or install normally
+# Install normally
 pip install .
 ```
 
 ## 📦 Dependencies
 
-The following packages are automatically installed with the requirements:
+Installing the package installs these runtime dependencies:
 
 | Package | Version | Purpose |
 |---------|---------|---------|
 | `construct` | >=2.10 | Binary data parsing |
-| `pytest` | >=7.0.0 | Testing framework |
 | `click` | >=8.0.0 | CLI framework |
 | `pandas` | >=1.5.0 | Data manipulation |
 | `psutil` | >=5.9.0 | System monitoring |
+
+`requirements.txt` also lists `pytest` and `pytest-cov` for running the tests. The `[dev]` extra adds `pytest`, `pytest-cov`, `black`, `flake8` and `mypy`.
 
 ### Optional Dependencies
 
@@ -156,35 +155,7 @@ These packages are not required but may be useful:
 
 ## 🔧 Configuration
 
-### Environment Variables
-
-You can set these optional environment variables:
-
-```bash
-# Set default batch size for conversions
-export PYTOPSPEED_BATCH_SIZE=1000
-
-# Set default log level
-export PYTOPSPEED_LOG_LEVEL=INFO
-
-# Set temporary directory for PHZ extraction
-export PYTOPSPEED_TEMP_DIR=/tmp
-```
-
-### Configuration File
-
-Create a `config.ini` file in the project root for persistent settings:
-
-```ini
-[converter]
-batch_size = 1000
-progress_callback = true
-verbose_logging = false
-
-[paths]
-temp_directory = /tmp
-output_directory = ./output
-```
+There are no configuration files or environment variables. Settings are passed on the command line (for example `--batch-size`, `-v`) or as constructor arguments in the Python API (`SqliteConverter(batch_size=..., progress_callback=...)`).
 
 ## 🧪 Testing the Installation
 
@@ -194,30 +165,35 @@ output_directory = ./output
 # Run all unit tests
 python -m pytest tests/unit/ -v
 
-# Run specific test categories
+# Run specific test files
 python -m pytest tests/unit/test_tps_parser.py -v
 python -m pytest tests/unit/test_sqlite_converter.py -v
+python -m pytest tests/unit/test_reverse_converter.py -v
 ```
 
 ### Run Integration Tests
 
 ```bash
-# Run integration tests (requires sample data)
+# Run integration tests (no sample data needed)
 python -m pytest tests/integration/ -v
 ```
+
+Unit and integration tests together should report 376 passed. The tests generate their TopSpeed files synthetically.
 
 ### Test CLI Functionality
 
 ```bash
 # Test help system
-python pytopspeed.py --help
-python pytopspeed.py convert --help
-python pytopspeed.py reverse --help
-python pytopspeed.py list --help
+pytopspeed --help
+pytopspeed convert --help
+pytopspeed reverse --help
+pytopspeed list --help
 
-# Test with sample data (if available)
-python pytopspeed.py list assets/TxWells.phz
+# Try it on one of your own files
+pytopspeed list MyProject.phz
 ```
+
+From a checkout without installing, replace `pytopspeed` with `python src/cli/main.py`.
 
 ## 🐛 Troubleshooting Installation
 
@@ -233,17 +209,20 @@ python pytopspeed.py list assets/TxWells.phz
 - Use `python -m pip` instead of `pip`
 - Check that Python is in your PATH
 
-**3. "Permission denied" errors**
+**3. "pytopspeed: command not found"**
+- The package isn't installed in the active environment (installing only `requirements.txt` doesn't create the command); run `pip install -e .` or use `python src/cli/main.py`
+- Check that the environment's `Scripts` (Windows) or `bin` directory is on your PATH
+
+**4. "Permission denied" errors**
 - Use `--user` flag: `pip install --user -r requirements.txt`
-- Run as administrator (Windows) or use `sudo` (Linux/macOS)
 - Use a virtual environment instead
 
-**4. "Package not found" errors**
+**5. "Package not found" errors**
 - Update pip: `python -m pip install --upgrade pip`
 - Check internet connection
 - Try using a different package index: `pip install -i https://pypi.org/simple/ -r requirements.txt`
 
-**5. "ImportError" after installation**
+**6. "ImportError" after installation**
 - Verify the correct Python environment is activated
 - Check that packages were installed in the right environment
 - Try reinstalling: `pip uninstall <package> && pip install <package>`
@@ -253,8 +232,7 @@ python pytopspeed.py list assets/TxWells.phz
 #### Windows
 
 **Issue**: "Microsoft Visual C++ 14.0 is required"
-- Install Microsoft Visual C++ Build Tools
-- Or install Visual Studio Community with C++ tools
+- pip is building a dependency from source because no wheel matches your Python version; use a supported Python version, or install Microsoft Visual C++ Build Tools
 
 **Issue**: Long path names
 - Enable long path support in Windows 10/11
@@ -290,10 +268,11 @@ pip install --upgrade construct
 ### Update the Library
 
 ```bash
-# Pull latest changes
-git pull origin main
+# From PyPI
+pip install --upgrade pytopspeed-modernized
 
-# Reinstall if needed
+# From a source checkout: pull latest changes and reinstall if needed
+git pull origin master
 pip install -e .
 ```
 
@@ -335,7 +314,7 @@ pip uninstall construct pytest click pandas psutil
 If you encounter issues during installation:
 
 1. **Check the logs**: Look for error messages in the terminal output
-2. **Verify prerequisites**: Ensure Python and conda are properly installed
+2. **Verify prerequisites**: Ensure Python (and conda, if you use it) is properly installed
 3. **Try different methods**: If one installation method fails, try another
 4. **Check compatibility**: Ensure your Python version is supported
 5. **Search issues**: Look for similar problems in the project repository

@@ -2,33 +2,27 @@
 
 This guide helps you diagnose and resolve common issues when using the Pytopspeed Modernized library.
 
+Commands below use the installed `pytopspeed` console script. From a source checkout without installing,
+use `python src/cli/main.py` instead.
+
 ## 🔍 General Debugging
 
 ### Enable Verbose Logging
 
-Always start troubleshooting by enabling verbose logging:
+Global options (`-v/--verbose`, `-q/--quiet`) go **before** the subcommand:
 
 ```bash
-python pytopspeed.py convert input.phd output.sqlite --verbose
+pytopspeed -v convert input.phd output.sqlite
 ```
 
-This provides detailed information about:
-- File processing steps
-- Table parsing details
-- Data conversion progress
-- Error locations and context
+`pytopspeed convert input.phd output.sqlite --verbose` fails with `unrecognized arguments: --verbose`.
+
+Verbose output shows file processing steps, table parsing details, conversion progress, and error context.
 
 ### Check File Permissions
 
-Ensure you have proper permissions:
-
-```bash
-# Check file permissions (Linux/macOS)
-ls -la input.phd output.sqlite
-
-# Check if files are locked (Windows)
-# Use Process Explorer or Task Manager
-```
+Ensure you can read the input and write the output location, and that the files are not open in another
+program (PHDWin, an SQLite browser, etc.).
 
 ## 🚨 Common Error Messages
 
@@ -36,325 +30,171 @@ ls -la input.phd output.sqlite
 
 **Error**: `stream read less than specified amount, expected X, found Y`
 
-**Cause**: Corrupted or incomplete table definitions in the TopSpeed file
+**Causes**:
+- The input is not a TopSpeed file (for example a wrong file or an unsupported extension). There is no
+  separate "unsupported file type" check: a non-TopSpeed file typically fails while parsing the header, e.g.
+  `Error in path (parsing) -> offset`.
+- A table definition that can't be parsed. That table falls back to the older parsing path; the rest of the
+  conversion continues.
 
 **Solutions**:
-- The conversion will continue and skip problematic tables
-- Check the log for which specific tables are affected
-- This is often a warning, not a fatal error
-- Verify the source TopSpeed file is not corrupted
+- Verify the input is a `.phd`, `.mod`, `.tps` or `.phz` file produced by PHDWin/Clarion
+- Check the log for which tables are affected
 
-**Example**:
-```
-2025-09-05 12:34:10 - SqliteConverter - ERROR - Error creating schema for table ENERGYADJ: 
-Error in path (parsing) -> fields -> name
-stream read less than specified amount, expected 1, found 0
-```
+### 2. "File not found" Errors
 
-### 2. "charmap codec can't decode"
-
-**Error**: `'charmap' codec can't decode byte 0xXX in position Y: character maps to <undefined>`
-
-**Cause**: Non-ASCII characters in text data that can't be decoded with the default encoding
+**Error**: for `.phd/.mod/.tps` input the error is just the file name (for example `Error: nofile.phd`);
+for `.phz` input it is `Input file not found: filename`.
 
 **Solutions**:
-- The conversion handles this gracefully by replacing problematic characters
-- Data is preserved but may have encoding warnings
-- This is typically a warning, not a fatal error
-- Check the log for specific table and field information
-
-**Example**:
-```
-2025-09-05 12:34:31 - SqliteConverter - ERROR - Error migrating data for table CURRENCYRATE: 
-'charmap' codec can't decode byte 0x98 in position 4: character maps to <undefined>
-```
-
-### 3. "File not found" Errors
-
-**Error**: `Input file not found: filename`
-
-**Solutions**:
-- Verify the file path is correct
-- Check if the file exists: `ls filename` or `dir filename`
-- Use absolute paths if relative paths don't work
+- Verify the path; use an absolute path if a relative one doesn't resolve
 - Ensure the file is not locked by another application
 
-### 4. "Table name collision" Warnings
+### 3. Mixing .phz with Other Files
 
-**Warning**: `Table name collision detected: TABLENAME -> prefixed_name`
+**Error**: `Cannot mix .phz files with other file types in a single conversion` or
+`Only one .phz file can be converted at a time`
 
-**Cause**: Multiple files have tables with the same name
+**Solution**: Convert a `.phz` on its own. Several `.phd/.mod/.tps` files can be converted together into
+one database; their tables are prefixed `phd_`, `mod_` and `tps_`.
 
-**Solutions**:
-- This is automatically handled with prefixing
-- Check the log to see which tables were affected
-- The conversion will continue successfully
-- Verify the prefixes are applied correctly
-
-### 5. "Permission denied" Errors
-
-**Error**: `[Errno 13] Permission denied: 'filename'`
+### 4. "Permission denied" / "database is locked"
 
 **Solutions**:
-- Check file permissions
+- Close applications using the input file or the SQLite database
 - Ensure the output directory is writable
-- Close any applications that might be using the files
-- Run with appropriate permissions (avoid using sudo unless necessary)
-
-### 6. "Database is locked" Errors
-
-**Error**: `database is locked`
-
-**Solutions**:
-- Close any applications using the SQLite database
-- Wait a moment and try again
-- Check for zombie processes
 - Use a different output filename
-
-### 7. "Unicode nonsense" in Color Fields
-
-**Error**: Fields like PRODUCTCOLOR, BACKSTARTCOLOR showing corrupted characters
-
-**Cause**: STRING fields containing binary data being incorrectly parsed as text
-
-**Solutions**:
-- This is now automatically handled by generic binary data detection
-- STRING fields containing binary data are automatically parsed as integers
-- No manual intervention required
-- The system detects small STRING fields (1-4 bytes) with non-printable characters
-
-### 8. "Array fields parsing as None"
-
-**Error**: BEGCUM and other array fields showing as None values
-
-**Cause**: Incorrect field offset calculation or unsupported field types
-
-**Solutions**:
-- Fixed with enhanced type mapping and dynamic offset calculation
-- Type 79 (DOUBLE_79) fields now properly supported
-- Large tables (100+ fields) fully supported
-- Robust error recovery ensures maximum data extraction
 
 ## 🔧 Conversion Issues
 
-### Slow Conversion Performance
+### The SQLite Database Is Much Larger Than Before
 
-**Symptoms**: Conversion takes much longer than expected
+**Expected.** The database now includes hidden `_topspeed_*` tables (`_topspeed_file`, `_topspeed_table`,
+`_topspeed_record`, `_topspeed_row`, `_topspeed_memo`) holding the original records, which reverse
+conversion needs. For example, TxWells.PHD converts to about 37 MB, compared with about 7 MB from earlier
+versions. Don't drop these tables if you intend to convert the database back.
 
-**Solutions**:
-- Reduce batch size: `--batch-size 500`
-- Use SSD storage for better I/O performance
-- Close other applications to free up memory
-- Check available disk space
-- Monitor system resources during conversion
+### `-q` Doesn't Silence Output / Log Lines Appear Twice
 
-### Memory Issues
+**Known issue.** `-q/--quiet` only suppresses the progress display; log messages are still printed, and
+some log lines appear twice (once with milliseconds in the timestamp, once without). This is cosmetic.
+To keep the output short, redirect it to a file:
 
-**Symptoms**: Out of memory errors or system slowdown
+```bash
+pytopspeed -q convert input.phd output.sqlite > convert.log 2>&1
+```
 
-**Solutions**:
-- Reduce batch size: `--batch-size 250`
-- Close other applications
-- Use 64-bit Python if available
-- Increase virtual memory/swap space
-- Process files individually instead of combined
+### Warning: "Failed to clean up temporary directory ... phz_extract_..."
 
-### Incomplete Data Conversion
+**Known issue on Windows.** When converting a `.phz`, the extracted files are still open when the converter
+tries to delete its temporary folder, so it logs:
 
-**Symptoms**: Some records show as NULL or missing data
+```
+WARNING - Failed to clean up temporary directory C:\Users\...\Temp\phz_extract_xxxxxxxx: [WinError 32] ...
+```
 
-**Solutions**:
-- Check the verbose log for data conversion errors
-- Verify the source TopSpeed file is not corrupted
-- Look for encoding issues in the log
-- Test with a smaller subset of data
-- Compare with original TopSpeed file using ODBC
+The conversion itself succeeded. Delete the leftover `phz_extract_*` folder from your temp directory
+manually if needed.
 
-### Table Name Issues
+### Values Look Different From Older Versions
 
-**Symptoms**: Tables have unexpected names or prefixes
+The column layout is derived from each table's definition:
+- `DIM(n)` fields, members of dimensioned GROUPs, and numbered fields `NAME1..NAMEn` become one TEXT column
+  holding a JSON array
+- BYTE fields are integers (not true/false)
+- DATE is `YYYY-MM-DD` (NULL when zero), TIME is `HH:MM:SS.cc`
+- NaN/infinity become NULL (`null` inside arrays)
+- Column names drop the Clarion `PRE:` prefix
 
-**Solutions**:
-- Check the log for table name sanitization details
-- Verify the file type detection is working correctly
-- Look for reserved word handling in the log
-- Review the prefixing logic for multiple files
+### Slow Conversion or Memory Issues
+
+- Try a smaller batch size: `pytopspeed convert --batch-size 500 input.phd output.sqlite`
+- Use local (not network) storage with enough free space for the larger database
+- Convert files individually instead of combined
 
 ## 🔄 Reverse Conversion Issues
 
-### "No PHD/MOD tables found"
+Reverse conversion: `pytopspeed reverse input.sqlite output_dir`. Output files keep their original names
+(for example `TxWells.PHD`, `TxWells.mod`); a database made from a `.phz` produces both files (they are not
+re-zipped). If an error occurs, no file is written for that source file.
 
-**Error**: `Found 0 PHD tables, 0 MOD tables`
+### "This database has no TopSpeed metadata (_topspeed_* tables)"
 
-**Cause**: The SQLite database doesn't have tables with the expected prefixes
+**Cause**: the database was created by an older version, or the `_topspeed_*` tables were removed.
 
-**Solutions**:
-- Ensure the database was created with the combined conversion
-- Check that tables have `phd_` or `mod_` prefixes
-- Use a database created from multiple TopSpeed files
-- Verify the database structure with: `sqlite3 database.db ".tables"`
+**Solution**: convert the original TopSpeed file again with this version, make your changes in that new
+database, then reverse it.
 
-### "seek out of range" Errors
+### "... have the same value for unique key ..."
 
-**Error**: `seek out of range` when reading generated files
+**Error**: `table X: two rows (record numbers A and B) have the same value for unique key KEYNAME (columns)`
 
-**Cause**: Generated TopSpeed files may not be fully compatible with the original parser
+**Cause**: an edit or insert gave two rows the same value in a TopSpeed unique key.
 
-**Solutions**:
-- This is a known limitation of reverse conversion
-- The data is correctly transferred
-- Generated files may not be readable by original TopSpeed software
-- Focus on data integrity rather than file format compatibility
+**Solution**: change one of the rows so the key columns are unique, then run the reverse conversion again.
 
-### Encoding Issues in Reverse Conversion
+### "cannot store ..." / "does not fit in DECIMAL" / "expected a JSON array of up to ..."
 
-**Error**: `'ascii' codec can't encode character`
+**Error**: `table X, record N: COLUMN: ...`
 
-**Solutions**:
-- The converter handles this automatically
-- Non-ASCII characters are replaced with safe alternatives
-- Check the log for specific encoding warnings
-- Verify the original data doesn't contain problematic characters
+**Cause**: an edited value doesn't fit the TopSpeed field, for example an array column with more elements
+than the field's `DIM`, a number too large for a DECIMAL, or text that isn't a number in a numeric column.
 
-## 📁 File Format Issues
+**Solution**: correct the named column in the named table. Array columns must stay JSON arrays.
 
-### Unsupported File Types
+### Warning: "... was converted without a field layout, so changes to it can't be written back"
 
-**Error**: `Unsupported file type: .xyz`
+**Cause**: the table's definition couldn't be parsed during forward conversion, so it went through the
+fallback path. Such tables are written back with their original records; edits to them are ignored.
 
-**Solutions**:
-- Verify the file extension is supported (.phd, .mod, .tps, .phz)
-- Check if the file is actually a TopSpeed file
-- Try renaming the file with the correct extension
-- Use a file analysis tool to verify the file format
+### Warning: "key encoding for ... has not been checked against TopSpeed"
 
-### Corrupted PHZ Files
+**Cause**: you edited a table with an index on a field type whose key encoding hasn't been verified (only
+BYTE, SHORT, LONG, DOUBLE and STRING are). Open the result in PHDWin (or check it with the ODBC driver, see
+[DEVELOPER.md](DEVELOPER.md#validating-writer-output)) before relying on it.
 
-**Error**: `Invalid .phz file (not a valid zip)`
+### Edits Seem To Have Been Treated As New Records
 
-**Solutions**:
-- Verify the .phz file is not corrupted
-- Try extracting it manually with a zip utility
-- Check if the file was completely downloaded
-- Re-download or re-create the .phz file
+Rows are matched to their original records by SQLite rowid. If rowids changed (for example `VACUUM` after
+deletes, or a recreated table), unchanged rows are still matched by content, but edited rows are written as
+new records with new record numbers.
 
-### Large File Handling
+### PHDWin: "Version file is UNAVAILABLE ... File System Error"
 
-**Symptoms**: Very large files cause issues
+**Cause**: after PHDWin fails to open one database, it keeps showing this error for every database it
+opens afterwards, including valid ones.
 
-**Solutions**:
-- Use smaller batch sizes
-- Ensure sufficient disk space (2-3x file size)
-- Monitor memory usage
-- Consider processing in chunks if possible
+**Solution**: restart PHDWin and open the file again before concluding the file is bad.
 
 ## 🧪 Testing and Validation
 
 ### Verify Conversion Results
 
-**Check record counts**:
 ```bash
-# Count records in original (if possible with ODBC)
-# Compare with SQLite results
-sqlite3 output.sqlite "SELECT COUNT(*) FROM phd_OWNER;"
+# List tables (hidden _topspeed_* tables included)
+sqlite3 output.sqlite ".tables"
+
+# Count and sample rows
+sqlite3 output.sqlite "SELECT COUNT(*) FROM OWNER;"
+sqlite3 output.sqlite "SELECT * FROM OWNER LIMIT 5;"
 ```
 
-**Verify data integrity**:
-```bash
-# Check for NULL values
-sqlite3 output.sqlite "SELECT COUNT(*) FROM phd_OWNER WHERE field_name IS NULL;"
-
-# Sample data
-sqlite3 output.sqlite "SELECT * FROM phd_OWNER LIMIT 5;"
-```
-
-### Test with Sample Data
-
-Always test with known good data first:
-
-```bash
-# Test with provided sample files
-python pytopspeed.py convert assets/TxWells.PHD test_output.sqlite
-python pytopspeed.py list assets/TxWells.phz
-```
-
-## 📊 Performance Optimization
-
-### Batch Size Tuning
-
-Test different batch sizes to find the optimal setting:
-
-```bash
-# Test with different batch sizes
-python pytopspeed.py convert input.phd output1.sqlite --batch-size 250
-python pytopspeed.py convert input.phd output2.sqlite --batch-size 500
-python pytopspeed.py convert input.phd output3.sqlite --batch-size 1000
-python pytopspeed.py convert input.phd output4.sqlite --batch-size 2000
-```
-
-### System Resource Monitoring
-
-Monitor system resources during conversion:
-
-```bash
-# Monitor CPU and memory usage
-# Use Task Manager (Windows), Activity Monitor (macOS), or htop (Linux)
-```
-
-### Disk I/O Optimization
-
-- Use SSD storage for better performance
-- Ensure sufficient free disk space
-- Close other disk-intensive applications
-- Use local storage instead of network drives
+In a combined database the tables are prefixed (`phd_OWNER`, ...). To compare against the original file,
+read it with the SoftVelocity TopSpeed ODBC driver (see [DEVELOPER.md](DEVELOPER.md#validating-writer-output)).
 
 ## 🆘 Getting Additional Help
 
-### Collect Debug Information
-
 When reporting issues, include:
 
-1. **System Information**:
+1. **Versions**:
    ```bash
+   pytopspeed --version
    python --version
-   python -c "import platform; print(platform.platform())"
    ```
-
-2. **File Information**:
+2. **Complete output**:
    ```bash
-   ls -la input_file.phd
-   file input_file.phd
+   pytopspeed -v convert input.phd output.sqlite > debug.log 2>&1
    ```
-
-3. **Complete Error Output**:
-   ```bash
-   python pytopspeed.py convert input.phd output.sqlite --verbose 2>&1 | tee debug.log
-   ```
-
-4. **Test Results**:
-   ```bash
-   python -m pytest tests/unit/ -v
-   ```
-
-### Create Minimal Test Case
-
-If possible, create a minimal test case:
-
-1. Use the smallest possible input file
-2. Test with a single table
-3. Isolate the specific error
-4. Document the exact steps to reproduce
-
-### Check Known Issues
-
-- Review the project's issue tracker
-- Check for similar problems in the original pytopspeed repository
-- Look for solutions in the documentation
-
-### Contact Information
-
-For additional help:
-- Open an issue in the project repository
-- Include all debug information
-- Provide a minimal test case if possible
-- Describe what you've already tried
+3. **Test results**: `python -m pytest tests/unit -q`
+4. A minimal reproduction if possible (smallest input file, single table, exact steps). Don't attach client
+   data to public issues.

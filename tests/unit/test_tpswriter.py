@@ -74,6 +74,7 @@ class TestBuildTps:
 
     def test_multi_level_tree(self, tmp_path, monkeypatch):
         monkeypatch.setattr(tpswriter, 'MAX_PAGE_SIZE', 300)
+        monkeypatch.setattr(tpswriter, 'MAX_CONTROL_PAGE_SIZE', 300)
         records = [(9, struct.pack('>IBI', 1, 0xF3, n) + b'payload') for n in range(1, 2001)]
         path = tmp_path / 'deep.tps'
         path.write_bytes(build_tps(records))
@@ -84,6 +85,35 @@ class TestBuildTps:
         levels = {tps.pages[ref].hierarchy_level for ref in tps.pages.list()}
         assert max(levels) >= 2
         assert len(read_raw_records(tps)) == 2001
+
+    def test_pages_stay_within_topspeed_limits(self, tmp_path):
+        records = [(9, struct.pack('>IBI', 1, 0xF3, n) + b'x') for n in range(1, 5001)]
+        records += [(9, struct.pack('>IBI', 2, 0xF3, n) + b'y' * 3000) for n in range(1, 21)]
+        path = tmp_path / 'limits.tps'
+        path.write_bytes(build_tps(records))
+
+        tps = TPS(str(path), check=False)
+        for ref in tps.pages.list():
+            page = tps.pages[ref]
+            limit = tpswriter.MAX_CONTROL_PAGE_SIZE if page.hierarchy_level else tpswriter.MAX_PAGE_SIZE
+            assert page.uncompressed_unabridged_size <= limit
+            assert page.record_count <= tpswriter.MAX_PAGE_RECORDS
+
+    def test_block_table_groups_pages_by_size(self, tmp_path):
+        # Header block entry N must hold exactly the pages that occupy N page units; the
+        # TopSpeed driver crashes on files laid out any other way
+        records = [(9, struct.pack('>IBI', 1, 0xF3, n) + bytes([n % 7]) * (n % 900)) for n in range(1, 400)]
+        path = tmp_path / 'blocks.tps'
+        path.write_bytes(build_tps(records))
+
+        tps = TPS(str(path), check=False)
+        starts, ends = tps.header.block_start_ref, tps.header.block_end_ref
+        assert (starts[0], ends[0]) == (0, 0)
+        for ref in tps.pages.list():
+            units = (tps.pages[ref].size + 255) // 256
+            assert starts[units] <= ref < ends[units]
+            assert (ref - starts[units]) % units == 0
+        assert list(starts) == sorted(starts) and list(ends) == sorted(ends)
 
     def test_duplicate_keys_rejected(self):
         record = (9, struct.pack('>IBI', 1, 0xF3, 1) + b'x')

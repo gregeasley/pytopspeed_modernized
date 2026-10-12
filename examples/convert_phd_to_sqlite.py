@@ -93,14 +93,17 @@ def verify_database(db_file):
         print(f"  Tables in database: {table_count}")
         
         # Get total record count
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        # Skip the hidden _topspeed_* metadata tables (used by reverse conversion)
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' "
+                       "AND name NOT LIKE '!_topspeed!_%' ESCAPE '!' "
+                       "AND name NOT LIKE 'sqlite!_%' ESCAPE '!'")
         tables = cursor.fetchall()
         
         total_records = 0
         tables_with_data = 0
         for table in tables:
             table_name = table[0]
-            cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+            cursor.execute(f'SELECT COUNT(*) FROM "{table_name}"')
             record_count = cursor.fetchone()[0]
             total_records += record_count
             if record_count > 0:
@@ -113,11 +116,11 @@ def verify_database(db_file):
         # Show sample data from a table with records
         for table in tables:
             table_name = table[0]
-            cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+            cursor.execute(f'SELECT COUNT(*) FROM "{table_name}"')
             record_count = cursor.fetchone()[0]
             if record_count > 0:
                 print(f"\n  Sample data from {table_name}:")
-                cursor.execute(f"SELECT * FROM {table_name} LIMIT 3")
+                cursor.execute(f'SELECT * FROM "{table_name}" LIMIT 3')
                 rows = cursor.fetchall()
                 for i, row in enumerate(rows):
                     # Show first 5 columns to avoid overwhelming output
