@@ -116,6 +116,7 @@ ehthumbs.db
 Thumbs.db
 
 # Project specific
+upload.txt
 temp/
 assets/
 debug/
